@@ -5,6 +5,8 @@ pypandoc_binary
 beautifulsoup4
 ollama
 google-genai
+flask
+python-docx
 
 ## for cuda
 ## --index-url https://download.pytorch.org/whl/cu128
