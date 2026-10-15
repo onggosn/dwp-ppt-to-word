@@ -18,23 +18,34 @@ WORK.mkdir(exist_ok=True)
 JOBS: dict[str, dict] = {}
 
 
-def run_job(job_id, pptx: Path, ref, provider, model):
+def run_job(job_id, pptx: Path, ref, provider, model, use_llm):
     job = JOBS[job_id]
     try:
         out_dir = WORK / job_id / "output"
-        job.update(status="running", step=0)
-        raw_html = c.convert_pptx_to_html_with_docling(str(pptx), output_dir=str(out_dir))
+        job["status"] = "running"
+        step = iter(range(len(job["steps"])))
 
-        job["step"] = 1
+        # converter.py picks the PPTX or PDF Docling pipeline from the file extension
+        job["step"] = next(step)
+        raw_html = c.convert_document_to_html_with_docling(str(pptx), output_dir=str(out_dir))
+
+        job["step"] = next(step)
         cleaned = c.clean_html_with_llm(
-            raw_html, reference_html_path=ref, provider=provider, model_name=model
+            raw_html,
+            reference_html_path=ref if use_llm else None,
+            provider=provider if use_llm else "none",
+            model_name=model,
+            progress_cb=lambda n: job.__setitem__("llm_chars", n),
         )
 
-        job["step"] = 2
+        job["step"] = next(step)
         docx_path = WORK / job_id / f"{pptx.stem}.docx"
         c.convert_html_to_docx(cleaned, str(docx_path))
 
-        job.update(status="done", step=3, file=str(docx_path), name=docx_path.name)
+        job["step"] = next(step)
+        c.format_docx_tables(str(docx_path))
+
+        job.update(status="done", step=len(job["steps"]), file=str(docx_path), name=docx_path.name)
     except Exception as e:  # surface error in UI
         traceback.print_exc()
         job.update(status="error", error=str(e))
@@ -48,8 +59,8 @@ def index():
 @app.post("/api/convert")
 def convert():
     f = request.files.get("pptx")
-    if not f or not f.filename.lower().endswith(".pptx"):
-        return jsonify(error="Please upload a .pptx file."), 400
+    if not f or not f.filename.lower().endswith((".pptx", ".pdf")):
+        return jsonify(error="Please upload a .pptx or .pdf file."), 400
 
     job_id = uuid.uuid4().hex[:10]
     job_dir = WORK / job_id
@@ -57,17 +68,33 @@ def convert():
     pptx = job_dir / Path(f.filename).name
     f.save(pptx)
 
-    r = request.files.get("reference")
-    if not r or not r.filename.lower().endswith((".html", ".htm")):
-        return jsonify(error="Please upload a reference .html file."), 400
-    ref = str(job_dir / "reference.html")
-    r.save(ref)
+    is_pdf = f.filename.lower().endswith(".pdf")
+    use_llm = request.form.get("use_llm", "true") == "true"
+
+    ref = None
+    if use_llm:
+        r = request.files.get("reference")
+        if not r or not r.filename.lower().endswith((".html", ".htm")):
+            return jsonify(error="Please upload a reference .html file."), 400
+        ref = str(job_dir / "reference.html")
+        r.save(ref)
 
     provider = request.form.get("provider", "gemini")
-    model = request.form.get("model") or "gemini-2.5-flash"
+    model = request.form.get("model") or "gemini-3.8-flash"
 
-    JOBS[job_id] = dict(id=job_id, status="queued", step=0, source=f.filename)
-    threading.Thread(target=run_job, args=(job_id, pptx, ref, provider, model), daemon=True).start()
+    steps = []
+    steps.append("Read the PDF with Docling" if is_pdf else "Read the PPTX with Docling")
+    steps.append("Restructure layout with LLM" if use_llm else "Clean HTML with Python (no LLM)")
+    steps.append("Build Word document with Pandoc")
+    steps.append("Apply table borders, 50/50 columns and image sizes")
+
+    JOBS[job_id] = dict(
+        id=job_id, status="queued", step=0, source=f.filename, steps=steps,
+        llm_step=1 if use_llm else -1, llm_chars=0,
+    )
+    threading.Thread(
+        target=run_job, args=(job_id, pptx, ref, provider, model, use_llm), daemon=True
+    ).start()
     return jsonify(id=job_id)
 
 
@@ -91,4 +118,4 @@ def download(job_id):
 
 
 if __name__ == "__main__":
-    app.run(debug=False, threaded=True, port=5000)
+    app.run(debug=False, threaded=True, port=5001)

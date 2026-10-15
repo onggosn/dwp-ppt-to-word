@@ -246,6 +246,25 @@
             font-size: 12px
         }
 
+        .opts {
+            margin-top: 16px
+        }
+
+        .chk {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13px;
+            font-weight: 400;
+            color: var(--text);
+            margin: 6px 0;
+            cursor: pointer
+        }
+
+        .chk small {
+            color: var(--muted)
+        }
+
         .actions {
             margin-top: 18px;
             display: flex;
@@ -297,7 +316,7 @@
 
         .steps li {
             display: flex;
-            align-items: center;
+            align-items: flex-start;
             gap: 10px;
             color: var(--muted)
         }
@@ -307,7 +326,60 @@
             height: 18px;
             border-radius: 50%;
             border: 2px solid var(--line);
-            flex: none
+            flex: none;
+            margin-top: 2px
+        }
+
+        .meta {
+            color: var(--muted);
+            font-weight: 400;
+            margin-left: 6px
+        }
+
+        .detail {
+            display: block;
+            color: var(--muted);
+            font-size: 12px;
+            font-weight: 400;
+            margin-top: 4px
+        }
+
+        .bar {
+            display: block;
+            height: 4px;
+            width: 100%;
+            max-width: 360px;
+            background: #e6eaf5;
+            border-radius: 2px;
+            overflow: hidden;
+            margin-top: 6px
+        }
+
+        .bar i {
+            display: block;
+            height: 100%;
+            width: 35%;
+            background: var(--blue);
+            border-radius: 2px;
+            animation: slide 1.2s ease-in-out infinite
+        }
+
+        @keyframes slide {
+            0% {
+                margin-left: -35%
+            }
+
+            100% {
+                margin-left: 100%
+            }
+        }
+
+        @media (prefers-reduced-motion:reduce) {
+            .bar i {
+                animation: none;
+                width: 100%;
+                opacity: .45
+            }
         }
 
         .steps li.run {
@@ -443,34 +515,40 @@
         </nav>
         <main>
             <div class="banner">
-                <h2>Turn a <b>PPTX slide</b> into a formatted <b>Word report</b></h2>
-                <p>Upload a presentation, choose a model, and download the .docx.</p>
+                <h2>Turn a <b>PPTX or PDF</b> into a formatted <b>Word report</b></h2>
+                <p>Upload a PPTX or PDF, choose your options, and download the .docx.</p>
             </div>
 
             <div class="left">
                 <section>
                     <h3>New conversion</h3>
-                    <p class="sub">Upload a .pptx file to start.</p>
+                    <p class="sub">Upload a .pptx or .pdf file to start.</p>
                     <div class="card">
                         <div class="drop" id="drop" tabindex="0" role="button" aria-label="Choose PPTX file">
-                            <strong id="fname">Drop a .pptx file here or click to browse</strong>
+                            <strong id="fname">Drop a .pptx or .pdf file here or click to browse</strong>
                             <span>Max one file per conversion</span>
-                            <input type="file" id="file" accept=".pptx" hidden>
+                            <input type="file" id="file" accept=".pptx,.pdf" hidden>
                         </div>
-                        <div class="row">
-                            <div><label for="provider">LLM provider</label>
-                                <select id="provider">
-                                    <option value="gemini">Gemini</option>
-                                    <option value="ollama">Ollama (local)</option>
-                                </select>
-                            </div>
-                            <div><label for="model">Model</label><input type="text" id="model" value="gemini-2.5-flash">
-                            </div>
+                        <div class="opts">
+                            <label class="chk"><input type="checkbox" id="usellm" checked> Use LLM to tidy the
+                                layout</label>
                         </div>
-                        <div class="row">
-                            <div class="refbox"><label for="ref">Reference HTML file (required)</label><input
-                                    type="file" id="ref" accept=".html,.htm"><small id="refhint">The converter copies
-                                    this file's headings, lists and style.</small></div>
+                        <div id="llmopts">
+                            <div class="row">
+                                <div><label for="provider">LLM provider</label>
+                                    <select id="provider">
+                                        <option value="gemini">Gemini</option>
+                                        <option value="ollama">Ollama (local)</option>
+                                    </select>
+                                </div>
+                                <div><label for="model">Model</label><input type="text" id="model"
+                                        value="gemini-3.8-flash"></div>
+                            </div>
+                            <div class="row">
+                                <div class="refbox"><label for="ref">Reference HTML file (required)</label><input
+                                        type="file" id="ref" accept=".html,.htm"><small id="refhint">The converter
+                                        copies this file's headings, lists and style.</small></div>
+                            </div>
                         </div>
                         <div class="actions">
                             <button id="go" disabled>Convert to DOCX</button>
@@ -483,11 +561,7 @@
                     <h3>Progress</h3>
                     <p class="sub" id="pname"></p>
                     <div class="card">
-                        <ul class="steps" id="steps">
-                            <li><span class="dot"></span>Read slides with Docling</li>
-                            <li><span class="dot"></span>Restructure layout with LLM</li>
-                            <li><span class="dot"></span>Build Word document with Pandoc</li>
-                        </ul>
+                        <ul class="steps" id="steps"></ul>
                         <div class="actions" id="result"></div>
                     </div>
                 </section>
@@ -509,7 +583,7 @@
     <script>
         const $ = id => document.getElementById(id);
         const drop = $('drop'), file = $('file'), go = $('go');
-        let timer;
+        let timer, lastStep = -1, stepStart = 0;
 
         drop.onclick = () => file.click();
         drop.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); file.click() } };
@@ -518,31 +592,43 @@
         drop.addEventListener('drop', e => { if (e.dataTransfer.files[0]) { file.files = e.dataTransfer.files; picked() } });
         file.onchange = picked;
         function picked() { const f = file.files[0]; if (!f) return; $('fname').textContent = f.name; ready() }
-        function ready() { const f = file.files[0], r = $('ref').files[0]; go.disabled = !(f && f.name.toLowerCase().endsWith('.pptx') && r) }
+        function ready() { const f = file.files[0], r = $('ref').files[0]; go.disabled = !(f && /\.(pptx|pdf)$/i.test(f.name) && (!$('usellm').checked || r)) }
         $('ref').onchange = ready;
-        $('provider').onchange = e => { $('model').value = e.target.value === 'gemini' ? 'gemini-2.5-flash' : 'qwen2.5-coder:7b' };
+        $('usellm').onchange = () => { $('llmopts').hidden = !$('usellm').checked; ready() };
+        $('provider').onchange = e => { $('model').value = e.target.value === 'gemini' ? 'gemini-3.8-flash' : 'qwen2.5-coder:7b' };
 
         go.onclick = async () => {
             const fd = new FormData();
             fd.append('pptx', file.files[0]);
+            fd.append('use_llm', $('usellm').checked);
             fd.append('provider', $('provider').value);
             fd.append('model', $('model').value);
-            fd.append('reference', $('ref').files[0]);
+            if ($('usellm').checked) fd.append('reference', $('ref').files[0]);
             go.disabled = true; $('msg').textContent = '';
             const r = await fetch('/api/convert', { method: 'POST', body: fd });
             const d = await r.json();
             if (!r.ok) { $('msg').innerHTML = '<span class="err">' + d.error + '</span>'; go.disabled = false; return }
             $('progress').hidden = false; $('pname').textContent = file.files[0].name; $('result').innerHTML = '';
-            poll(d.id);
+            $('steps').innerHTML = ''; poll(d.id);
         };
 
         function poll(id) {
-            clearInterval(timer);
-            timer = setInterval(async () => {
+            clearInterval(timer); lastStep = -1;
+            const tick = async () => {
                 const j = await (await fetch('/api/status/' + id)).json();
-                [...$('steps').children].forEach((li, i) => {
-                    li.className = j.status === 'done' || i < j.step ? 'done' : (i === j.step && j.status !== 'error' ? 'run' : '');
-                });
+                if (j.step !== lastStep) { lastStep = j.step; stepStart = Date.now() }
+                const secs = Math.round((Date.now() - stepStart) / 1000);
+                const elapsed = secs < 60 ? secs + 's' : Math.floor(secs / 60) + 'm ' + String(secs % 60).padStart(2, '0') + 's';
+                $('steps').innerHTML = (j.steps || []).map((t, i) => {
+                    const running = j.status !== 'done' && j.status !== 'error' && i === j.step;
+                    const cls = j.status === 'done' || i < j.step ? 'done' : (running ? 'run' : '');
+                    if (!running) return '<li class="' + cls + '"><span class="dot"></span><span>' + t + '</span></li>';
+                    let detail = 'Working...';
+                    if (i === j.llm_step) detail = j.llm_chars > 0 ? 'Receiving response... ' + j.llm_chars.toLocaleString() + ' characters' : 'Waiting for the model to start responding...';
+                    else if (i === 0 && secs > 15) detail = 'Still reading. On the first run Docling may be downloading its models.';
+                    return '<li class="run"><span class="dot"></span><span>' + t + '<span class="meta">' + elapsed + '</span>' +
+                        '<span class="bar"><i></i></span><span class="detail">' + detail + '</span></span></li>';
+                }).join('');
                 if (j.status === 'done') {
                     clearInterval(timer); go.disabled = false;
                     $('result').innerHTML = '<a class="btn" href="/download/' + id + '">Download DOCX</a>';
@@ -552,7 +638,8 @@
                     $('result').innerHTML = '<span class="err">Conversion failed: ' + j.error + '</span>';
                     history();
                 }
-            }, 1200);
+            };
+            tick(); timer = setInterval(tick, 1000);
         }
 
         async function history() {
