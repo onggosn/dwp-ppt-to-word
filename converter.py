@@ -195,6 +195,10 @@ def apply_deterministic_html_styles(html_str):
     return str(soup)
 
 
+# Merapikan HTML butuh hasil konsisten, bukan kreatif: dipakai oleh Gemini dan Ollama.
+LLM_TEMPERATURE = 0.0
+
+
 def _gemini_generate(prompt, model_name, progress_cb=None):
     """Streams the response with thinking turned off.
     Tries thinking_budget=0, then thinking_level="low", then plain defaults,
@@ -202,7 +206,7 @@ def _gemini_generate(prompt, model_name, progress_cb=None):
     last_error: Exception = RuntimeError("Gemini request failed")
     for think_kwargs in ({"thinking_budget": 0}, {"thinking_level": "low"}, None):
         try:
-            cfg = {"temperature": 0.1}
+            cfg = {"temperature": LLM_TEMPERATURE}
             if think_kwargs:
                 cfg["thinking_config"] = genai_types.ThinkingConfig(**think_kwargs)
             chunks, total = [], 0
@@ -240,7 +244,7 @@ def _call_llm(prompt, provider, model_name, progress_cb=None):
         for chunk in ollama.chat(
             model=model_name,
             messages=[{"role": "user", "content": prompt}],
-            options={"temperature": 0.1},
+            options={"temperature": LLM_TEMPERATURE},
             stream=True,
         ):
             piece = chunk["message"]["content"]

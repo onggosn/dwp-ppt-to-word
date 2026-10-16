@@ -11,11 +11,13 @@ from pathlib import Path
 from flask import Flask, jsonify, render_template, request, send_file
 
 import converter as c  # your original code
+import ckeditor_flow  # PPT -> CKEditor (seamless editing)
 
 app = Flask(__name__)
 WORK = Path("work")
 WORK.mkdir(exist_ok=True)
 JOBS: dict[str, dict] = {}
+ckeditor_flow.register(app, WORK)  # /api/ck/*
 
 
 def run_job(job_id, pptx: Path, ref, provider, model, use_llm):
@@ -54,6 +56,12 @@ def run_job(job_id, pptx: Path, ref, provider, model, use_llm):
 @app.get("/")
 def index():
     return render_template("index.html")
+
+
+@app.get("/dwp")
+def index_dwp():
+    # tampilan bergaya DWP: konversi PPT/PDF ke Word + editor PPT/CKEditor
+    return render_template("index_dwp.html")
 
 
 @app.post("/api/convert")
