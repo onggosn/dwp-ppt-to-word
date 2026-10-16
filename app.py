@@ -13,12 +13,14 @@ from flask import Flask, jsonify, render_template, request, send_file
 import converter as c  # your original code
 import ckeditor_flow  # PPT -> CKEditor (seamless editing)
 import layout_engine  # PPTX -> DOCX/HTML dari geometri slide (tanpa LLM)
+import review  # halaman review hasil layout engine per slide (/review)
 
 app = Flask(__name__)
 WORK = Path("work")
 WORK.mkdir(exist_ok=True)
 JOBS: dict[str, dict] = {}
 ckeditor_flow.register(app, WORK)  # /api/ck/*
+review.register(app, WORK)  # /review, /api/review/*
 
 
 def run_job(job_id, pptx: Path, ref, provider, model, use_llm):

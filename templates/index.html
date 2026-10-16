@@ -656,7 +656,8 @@
                 if (j.status === 'done') {
                     clearInterval(timer); go.disabled = false;
                     $('result').innerHTML = '<a class="btn" href="/download/' + id + '">Download DOCX</a>' +
-                        (j.html ? ' <a class="btn" href="/download/' + id + '/html">Download HTML (CKEditor)</a>' : '');
+                        (j.html ? ' <a class="btn" href="/download/' + id + '/html">Download HTML (CKEditor)</a>' +
+                            ' <a class="btn" href="/review/' + id + '" target="_blank">Review per slide</a>' : '');
                     history();
                 } else if (j.status === 'error') {
                     clearInterval(timer); go.disabled = false;

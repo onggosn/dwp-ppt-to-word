@@ -317,29 +317,66 @@ def _pick_title(boxes: list) -> Optional[Box]:
 GRID_HEADER_MAX_CHARS = 45
 GRID_MIN_COLS = 3
 GRID_MIN_ROWS = 2
-GRID_HEADER_GAP = 0.015        # sel header grid saling menempel; celah lebih lebar = bukan satu header
+GRID_HEADER_GAP = 0.022        # sel header grid (hampir) menempel; celah lebih lebar = bukan satu header
 GRID_FOOTER_Y = 0.96           # teks yang mulai di bawah ini (legenda) tidak masuk tabel
-GRID_COLUMN_FIT = 0.8        # >= 75% kotak isi minimal 80% lebarnya berada di dalam kolomnya
+GRID_ROW_COVERAGE = 0.85       # minimal porsi kotak isi yang masuk ke baris; kurang = mode daftar per kolom
+GRID_LIST_GAP = 0.05           # mode daftar: jarak vertikal maksimum antar kotak dalam satu kolom
+GRID_COLUMN_FIT = 0.8       # >= 75% kotak isi minimal 80% lebarnya berada di dalam kolomnya
 
 
-def _cell_text(boxes: list) -> str:
+def _cell_text(boxes: list, notes: Optional[dict] = None) -> str:
+    """notes: {id(box): [label]} -> ditempel di akhir teks box itu, mis. "RBT New BI-FAST (TW II)"."""
     lines = []
     for b in sorted(boxes, key=lambda b: (round(b.y, 3), b.x)):
+        box_lines = []
         for p in b.paras:
             t = "".join(r[0] for r in _strip_runs(p.runs))
             if t:
-                lines.append(("• " if p.bullet else "") + t)
+                box_lines.append(("• " if p.bullet else "") + t)
+        if box_lines and notes and notes.get(id(b)):
+            box_lines[-1] += " (" + ", ".join(notes[id(b)]) + ")"
+        lines += box_lines
     return "\n".join(lines)
 
 
-def detect_grids(texts: list) -> tuple:
+def _mark_labels(header, top, rows, texts, marks) -> tuple:
+    """Penanda kecil (titik/centang) di bawah sub-header kolom (mis. TW -> I II III IV) diubah jadi
+    label teks. Label ditempel ke teks sebaris di kolom sebelah kirinya; kalau tidak ada, ke sel itu sendiri.
+    Mengembalikan ({id(box): [label]}, {(row, col): [label]})."""
+    subs = {}
+    for c, h in enumerate(header):
+        subs[c] = [t for t in texts if len(t.text.strip()) <= 4 and h.x - 0.005 <= t.x + t.w / 2 <= h.r + 0.005
+                   and t.y >= h.b - 0.005 and t.b <= top + 0.01]
+    notes, extra = {}, {}
+    for ri, (lo, hi, cells) in enumerate(rows):
+        for m in marks:
+            cx, cy = m.x + m.w / 2, m.y + m.h / 2
+            if not lo <= cy < hi:
+                continue
+            for c, ss in subs.items():
+                sub = next((s for s in ss if s.x - 0.003 <= cx <= s.r + 0.003), None)
+                if not sub:
+                    continue
+                label = f"{header[c].text.strip()} {sub.text.strip()}"
+                left = [t for t in cells[c - 1] if abs((t.y + t.h / 2) - cy) < 0.02] if c > 0 else []
+                target = min(left, key=lambda t: abs((t.y + t.h / 2) - cy), default=None)
+                if target is not None:
+                    notes.setdefault(id(target), []).append(label)
+                else:
+                    extra.setdefault((ri, c), []).append(label)
+                break
+    return notes, extra
+
+
+def detect_grids(texts: list, marks: list = ()) -> tuple:
     """Cari baris header (>= 3 teks pendek sejajar, berdampingan) lalu bangun tabel di bawahnya.
     Baris ditentukan oleh kotak di kolom pertama/kedua (mis. "ICT 3.1.1 SP RITEL") yang tingginya
     menutupi barisnya; teks lain masuk ke sel menurut posisi tengahnya.
     Mengembalikan ([Box table], set id teks yang dipakai)."""
     used, grids = set(), []
-    heads = sorted([t for t in texts if len(t.text) <= GRID_HEADER_MAX_CHARS and t.h <= 0.07],
-                   key=lambda t: t.y)
+    # lencana nomor ("3", "4", ...) yang menempel di header tidak ikut membentuk baris header
+    heads = sorted([t for t in texts if len(t.text) <= GRID_HEADER_MAX_CHARS and t.h <= 0.07
+                    and not t.text.strip().isdigit()], key=lambda t: t.y)
     # kelompokkan per garis horizontal: tepi atas sejajar (header bertingkat seperti "TW" di atas
     # I-IV punya tengah yang berbeda, tapi tepi atasnya sama dengan header lain)
     lines, cur = [], []
@@ -388,32 +425,54 @@ def detect_grids(texts: list) -> tuple:
                 if len(cands) >= GRID_MIN_ROWS and all(a.b <= b.y + 0.01 for a, b in zip(cands, cands[1:])):
                     anchors = cands
                     break
-            if not anchors:
-                continue
-            bands = []
-            for i, a in enumerate(anchors):
-                end = a.b + 0.008
-                if i + 1 < len(anchors):
-                    end = min(end, anchors[i + 1].y)
-                bands.append((a.y - 0.008, end))
-            rows, row_used = [], set()
-            for lo, hi in bands:
-                cells = [[] for _ in header]
-                for t in members:
-                    cy = t.y + t.h / 2
-                    if lo <= cy < hi:
-                        cells[col_of(t)].append(t)
+            rows, row_used, bands = [], set(), []
+            if anchors:
+                for i, a in enumerate(anchors):
+                    end = a.b + 0.008
+                    if i + 1 < len(anchors):
+                        end = min(end, anchors[i + 1].y)
+                    bands.append((a.y - 0.008, end))
+                for lo, hi in bands:
+                    cells = [[] for _ in header]
+                    for t in members:
+                        cy = t.y + t.h / 2
+                        if lo <= cy < hi:
+                            cells[col_of(t)].append(t)
+                            row_used.add(id(t))
+                    rows.append(cells)
+            if not anchors or len(row_used) < GRID_ROW_COVERAGE * len(members) or \
+                    sum(1 for r in rows if sum(1 for c in r if c) >= 2) < GRID_MIN_ROWS:
+                # daftar per kolom (mis. matriks inisiatif): kotak bertumpuk langsung di bawah tiap header,
+                # baris tidak sejajar antar kolom -> satu baris isi berisi semua item per kolom
+                cells, row_used = [[] for _ in header], set()
+                for c, h in enumerate(header):
+                    prev_b = top
+                    for t in sorted(by_col.get(c, []), key=lambda t: t.y):
+                        if t.y - prev_b > GRID_LIST_GAP or t.x < h.x - 0.02 or t.r > h.r + 0.02:
+                            break
+                        cells[c].append(t)
                         row_used.add(id(t))
-                rows.append(cells)
-            if sum(1 for r in rows if sum(1 for c in r if c) >= 2) < GRID_MIN_ROWS:
-                continue
+                        prev_b = t.b
+                if sum(1 for c in cells if c) < GRID_MIN_COLS:
+                    continue
+                rows = [cells]
+                bands = [(top, max(t.b for c in cells for t in c) + 0.005)]
             # grid asli: tiap kotak isi berada di dalam lebar kolomnya. Diagram yang kebetulan punya
             # deretan label sejajar (atau dua tabel bersebelahan) gagal di sini.
             fits = sorted(max(0.0, min(t.r, header[c].r) - max(t.x, header[c].x)) / max(t.w, 1e-6)
                           for r in rows for c, cell in enumerate(r) for t in cell)
             if not fits or fits[len(fits) // 4] < GRID_COLUMN_FIT:
                 continue
-            table_rows = [[_cell_text([h]) for h in header]] + [[_cell_text(c) for c in r] for r in rows]
+            notes, extra = _mark_labels(header, top, [(lo, hi, r) for (lo, hi), r in zip(bands, rows)],
+                                        texts, marks)
+
+            def cell(ri, ci, boxes):
+                text = _cell_text(boxes, notes)
+                more = ", ".join(extra.get((ri, ci), []))
+                return "\n".join(x for x in (text, more) if x)
+
+            table_rows = [[_cell_text([h]) for h in header]] + \
+                [[cell(ri, ci, c) for ci, c in enumerate(r)] for ri, r in enumerate(rows)]
             # kolom yang kosong di semua baris isi (mis. kolom ikon/progress) dibuang
             keep = [i for i in range(len(header)) if any(r[i] for r in table_rows[1:])]
             table_rows = [[r[i] for i in keep] for r in table_rows]
@@ -488,7 +547,10 @@ def analyse(slide, W: int, H: int) -> dict:
     title = _pick_title(boxes)
     if title:
         title.is_title = True
-    grids, used = detect_grids([b for b in boxes if b.kind == "text" and b is not title])
+    # penanda progres di grid = shape kecil (titik). Ikon gambar (centang "Ahead Schedule") sudah
+    # punya label teks sendiri, jadi tidak dihitung.
+    marks = [b for b in boxes if b.kind == "shape" and b.w < 0.03 and b.h < 0.06]
+    grids, used = detect_grids([b for b in boxes if b.kind == "text" and b is not title], marks)
     # shape/ikon di dalam area grid (titik progres, latar baris, garis) = dekorasi tabel
     used |= {id(b) for g in grids for b in boxes
              if (b.kind == "shape" or (b.kind == "picture" and b.w < ICON_MAX_W)) and _inside(b, g, 0.01)}
@@ -497,6 +559,8 @@ def analyse(slide, W: int, H: int) -> dict:
     boxes = [b for b in boxes if not (b.kind == "text" and b is not title and len(b.text.strip()) <= 2)]
     diagrams, used = detect_diagrams(boxes, title)
     boxes = [b for b in boxes if id(b) not in used]
+    # grid yang berada di dalam area diagram sudah ikut ter-crop di gambar diagram -> jangan dobel
+    grids = [g for g in grids if not any(_inside(g, d, 0.02) for d in diagrams)]
 
     pics = merge_pictures([b for b in boxes if b.kind == "picture" and b.w >= ICON_MAX_W] + diagrams)
     tables = sorted([b for b in boxes if b.kind == "table"] + grids, key=lambda b: (b.y, b.x))
@@ -1073,9 +1137,16 @@ def convert_pptx(
         Path(html_path).write_text(html_document(blocks_to_html(slides), pptx_path.stem), encoding="utf-8")
         stats["html"] = str(html_path)
 
-    # bahan halaman review: per slide render asli + HTML hasil (gambar dirujuk relatif ke work_dir)
+    # bahan halaman review: per slide render asli (pratinjau JPEG kecil) + HTML hasil
+    if rendered:
+        for n in numbers:
+            src = render_dir / f"slide{n}.png"
+            if src.exists():
+                im = Image.open(src).convert("RGB")
+                im.thumbnail((1400, 1400))
+                im.save(render_dir / f"preview{n}.jpg", quality=80)
     review = {"source": pptx_path.name, "rendered": rendered, "skipped": skipped, "slides": [
-        {"n": n, "render": f"slides/slide{n}.png" if rendered else None,
+        {"n": n, "render": f"slides/preview{n}.jpg" if rendered else None,
          "html": blocks_to_html([blocks], img_url=lambda p: f"media/{Path(p).name}")}
         for n, blocks in zip(numbers, slides)]}
     (work / "review.json").write_text(json.dumps(review, ensure_ascii=False), encoding="utf-8")
