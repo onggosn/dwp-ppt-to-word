@@ -1,7 +1,9 @@
 """PPT -> CKEditor flow (seamless editing), backend for templates/index_dwp.html.
 
 Independent of converter.py (no Docling / LLM needed). It:
-  1. reads the slides of the document .pptx (mock OneDrive: work/onedrive, generated from docs/test.pptx) (title, text, tables, pictures) with python-pptx,
+  1. reads the slides of the document .pptx (mock OneDrive: work/onedrive, generated from docs/test.pptx)
+     with layout_engine (slide geometry -> headings, lists, picture+caption tables, data tables),
+     renders the slides with PowerPoint and crops every picture from the render,
   2. maps every slide to a sub-section (leaf of the section tree, like Mapping Section PPT in DWP),
   3. builds CKEditor-ready HTML grouped by section, in one run, with real progress.
 
@@ -17,6 +19,7 @@ Slide -> section mapping order:
     4. default  first leaf section
 A tag that points to a parent section is moved to the first leaf under it.
 """
+import dataclasses
 import html
 import json
 import os
@@ -29,7 +32,9 @@ from pathlib import Path
 
 from flask import Blueprint, abort, jsonify, request, send_from_directory
 from pptx import Presentation
-from pptx.enum.shapes import MSO_SHAPE_TYPE, PP_PLACEHOLDER
+from pptx.enum.shapes import MSO_SHAPE_TYPE
+
+import layout_engine
 
 HERE = Path(__file__).resolve().parent
 MOCK_TEMPLATE = HERE / "docs" / "test.pptx"  # sementara: pengganti PPT template section di OneDrive
@@ -121,79 +126,80 @@ def _walk(shapes):
             yield from _walk(sh.shapes)
 
 
+def _text(runs):
+    """Teks polos dengan normalisasi spasi yang sama seperti di HTML/DOCX."""
+    return "".join(r[0] for r in layout_engine._strip_runs(runs))
+
+
 def extract_slides(pptx_path, media_dir):
+    """Analisa layout tiap slide (cepat, tanpa render). Gambar baru dibuat oleh render_media();
+    sampai saat itu tiap baris gambar menunjuk ke path tujuan dan box-nya disimpan di slide["pending"]."""
     prs = Presentation(str(pptx_path))
+    W, H = prs.slide_width, prs.slide_height
     media_dir = Path(media_dir)
-    media_dir.mkdir(parents=True, exist_ok=True)
     slides = []
     for n, sl in enumerate(prs.slides, 1):
-        title = ""
-        if sl.shapes.title is not None and sl.shapes.title.has_text_frame:
-            title = sl.shapes.title.text_frame.text.strip().replace("\n", " ")
-        tags_text, blocks, pic_i = [], [], 0
+        if layout_engine.is_hidden(sl):
+            continue      # slide yang di-hide di PowerPoint tidak masuk dokumen
+        tags_text = []
         for sh in _walk(sl.shapes):
             tags_text += [sh.name or "", _alt_text(sh)]
-            if sl.shapes.title is not None and sh.shape_id == sl.shapes.title.shape_id:
-                continue
-            if sh.has_text_frame:
-                is_body = sh.is_placeholder and sh.placeholder_format.type in (
-                    PP_PLACEHOLDER.BODY, PP_PLACEHOLDER.OBJECT)
-                for p in sh.text_frame.paragraphs:
-                    text = "".join(r.text for r in p.runs).strip()
-                    if not text:
-                        continue
-                    kind = "li" if (is_body or p.level > 0) else "p"
-                    blocks.append({"type": kind, "text": text, "level": int(p.level)})
-            elif getattr(sh, "has_table", False) and sh.has_table:
-                rows = [[c.text.strip() for c in r.cells] for r in sh.table.rows]
-                blocks.append({"type": "table", "rows": rows})
-            elif sh.shape_type == MSO_SHAPE_TYPE.PICTURE:
-                try:
-                    pic_i += 1
-                    name = f"s{n}_{pic_i}.{sh.image.ext}"
-                    (media_dir / name).write_bytes(sh.image.blob)
-                    blocks.append({"type": "img", "file": name, "alt": _alt_text(sh)})
-                except Exception:
-                    pass
         if sl.has_notes_slide and sl.notes_slide.notes_text_frame is not None:
             tags_text.append(sl.notes_slide.notes_text_frame.text or "")
+
+        info = layout_engine.analyse(sl, W, H)
+        pending, counter = {}, {"n": 0}
+
+        def defer(box, _n=n, _pending=pending, _c=counter):
+            _c["n"] += 1
+            path = media_dir / f"s{_n:02d}_{_c['n']}.png"
+            _pending[path] = box
+            return path
+
+        blocks = layout_engine.slide_blocks(info, defer)
+        title = _text(info["title"].runs) if info["title"] else ""
         if not title:
-            first = next((b["text"] for b in blocks if b["type"] in ("p", "li")), "")
-            title = first[:80] if first else f"Slide {n}"
-        slides.append({"n": n, "title": title, "blocks": blocks, "tags_text": tags_text})
+            first = next((b for b in blocks if b.type in ("heading", "para", "bullet")), None)
+            title = _text(first.runs)[:80] if first else f"Slide {n}"
+        slides.append({"n": n, "title": title, "blocks": blocks, "tags_text": tags_text, "pending": pending})
     return slides
 
 
+def render_media(pptx_path, job_dir, slides, on_slide=None):
+    """Render slide dengan PowerPoint lalu crop tiap gambar. Tanpa PowerPoint: gambar asli dari PPTX.
+    Baris gambar yang gagal disimpan dibuang."""
+    job_dir = Path(job_dir)
+    rendered = layout_engine.render_slides(Path(pptx_path), job_dir / "slides")
+    for s in slides:
+        render = layout_engine.load_render(job_dir / "slides" / f"slide{s['n']}.png") if rendered else None
+        for b in s["blocks"]:
+            if b.type != "figures":
+                continue
+            rows = []
+            for row in b.rows:
+                box = s["pending"].get(row["img"])
+                saved = layout_engine.save_box_image(box, row["img"], render) if box else None
+                if saved:
+                    rows.append(dict(row, img=saved))
+            b.rows = rows
+        s["blocks"] = [b for b in s["blocks"] if b.type != "figures" or b.rows]
+        s["pending"] = {}
+        if on_slide:
+            on_slide(s["n"])
+    return rendered
+
+
 # ------------------------------------------------------------------ CKEditor HTML
-def _blocks_html(blocks, job_id):
-    out, stack = [], []  # stack of open <ul> levels
-
-    def close_to(level):
-        while len(stack) > level:
-            out.append("</ul>")
-            stack.pop()
-
-    for b in blocks:
-        if b["type"] == "li":
-            lvl = min(b["level"], 5)
-            while len(stack) < lvl + 1:
-                out.append("<ul>")
-                stack.append(1)
-            close_to(lvl + 1)
-            out.append(f"<li>{html.escape(b['text'])}</li>")
-            continue
-        close_to(0)
-        if b["type"] == "p":
-            out.append(f"<p>{html.escape(b['text'])}</p>")
-        elif b["type"] == "table":
-            rows = "".join(
-                "<tr>" + "".join(f"<td>{html.escape(c)}</td>" for c in r) + "</tr>" for r in b["rows"])
-            out.append(f'<table border="1" style="border-collapse:collapse;width:100%"><tbody>{rows}</tbody></table>')
-        elif b["type"] == "img":
-            out.append(
-                f'<p><img src="/api/ck/media/{job_id}/{b["file"]}" alt="{html.escape(b["alt"])}" style="max-width:100%"></p>')
-    close_to(0)
-    return "".join(out)
+def _slide_html(slide, job_id, title_level):
+    """Blok layout_engine -> HTML. Judul slide sudah ditulis terpisah (dengan data-slide), jadi heading
+    level 1 di awal dilewati dan heading lain digeser ke bawah judul slide."""
+    blocks = slide["blocks"]
+    if blocks and blocks[0].type == "heading" and blocks[0].level == 1:
+        blocks = blocks[1:]
+    shifted = [dataclasses.replace(b, level=min(title_level + b.level - 1, 6)) if b.type == "heading" else b
+               for b in blocks]
+    return layout_engine.blocks_to_html(
+        [shifted], img_url=lambda p: f"/api/ck/media/{job_id}/{Path(p).name}")
 
 
 def build_ck_html(job_id, slides, toc, mapping):
@@ -208,19 +214,21 @@ def build_ck_html(job_id, slides, toc, mapping):
         for s in by_code.get(node["code"], []):
             sh = min(h + 1, 6)
             parts.append(f'<h{sh} data-slide="{s["n"]}">{html.escape(s["title"])}</h{sh}>')
-            parts.append(_blocks_html(s["blocks"], job_id))
+            parts.append(_slide_html(s, job_id, sh))
     return "\n".join(parts)
 
 
 def _public_slide(s, mapping):
     flat = []
     for b in s["blocks"]:
-        if b["type"] in ("p", "li"):
-            flat.append(b["text"])
-        elif b["type"] == "table":
-            flat.append("[Tabel %d baris]" % len(b["rows"]))
-        elif b["type"] == "img":
-            flat.append("[Gambar]")
+        if b.type in ("heading", "para", "bullet", "note"):
+            text = _text(b.runs)
+            if text and not (b.type == "heading" and b.level == 1 and text == s["title"]):
+                flat.append(text)
+        elif b.type == "figures":
+            flat += ["[Gambar]"] * len(b.rows)
+        elif b.type == "table":
+            flat.append("[Tabel %d baris]" % len(b.rows))
     m = mapping[s["n"]]
     return {"n": s["n"], "title": s["title"], "lines": flat, "section": m["code"], "method": m["method"]}
 
@@ -259,7 +267,7 @@ def register(app, work_dir):
         slides = extract_slides(src, d / "media")
         if not slides:
             raise ValueError("PPTX tidak memiliki slide.")
-        j = dict(id=job_id, source=source, dir=d, slides=slides, toc=toc, status="uploaded",
+        j = dict(id=job_id, source=source, dir=d, src=Path(src), slides=slides, toc=toc, status="uploaded",
                  done=0, total=len(slides), pct=0, phase=0, steps=[{"t": t, "state": "wait"} for t in STEPS],
                  html="", error=None)
         j["mapping"] = do_map(j)
@@ -324,8 +332,9 @@ def register(app, work_dir):
                 if STEP_DELAY:
                     time.sleep(STEP_DELAY)
 
-            for i in range(1, total + 1):          # 1. membaca slide
-                tick(0, i)
+            # 1. membaca slide: render PowerPoint + crop gambar (progress per slide setelah render)
+            tick(0, 0)
+            render_media(j["src"], j["dir"], j["slides"], on_slide=lambda n: tick(0, n))
             j["mapping"] = do_map(j)
             for i in range(1, total + 1):          # 2. memetakan ke section
                 tick(1, i)

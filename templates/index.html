@@ -529,11 +529,23 @@
                             <span>Max one file per conversion</span>
                             <input type="file" id="file" accept=".pptx,.pdf" hidden>
                         </div>
-                        <div class="opts">
-                            <label class="chk"><input type="checkbox" id="usellm" checked> Use LLM to tidy the
-                                layout</label>
+                        <div class="row">
+                            <div><label for="engine">Conversion engine</label>
+                                <select id="engine">
+                                    <option value="layout">Layout engine (rule-based, no LLM needed)</option>
+                                    <option value="docling">Docling + LLM layout (legacy)</option>
+                                </select>
+                                <small id="enginehint">Layout comes from slide geometry. PDF files always use Docling.</small>
+                            </div>
                         </div>
-                        <div id="llmopts">
+                        <div class="opts" id="hiddenopt">
+                            <label class="chk"><input type="checkbox" id="inclhidden"> Include hidden slides</label>
+                        </div>
+                        <div class="opts">
+                            <label class="chk"><input type="checkbox" id="usellm"> <span id="llmlabel">Use LLM to
+                                    tidy the text (optional)</span></label>
+                        </div>
+                        <div id="llmopts" hidden>
                             <div class="row">
                                 <div><label for="provider">LLM provider</label>
                                     <select id="provider">
@@ -544,7 +556,7 @@
                                 <div><label for="model">Model</label><input type="text" id="model"
                                         value="gemini-3.8-flash"></div>
                             </div>
-                            <div class="row">
+                            <div class="row" id="refrow">
                                 <div class="refbox"><label for="ref">Reference HTML file (required)</label><input
                                         type="file" id="ref" accept=".html,.htm"><small id="refhint">The converter
                                         copies this file's headings, lists and style.</small></div>
@@ -592,18 +604,30 @@
         drop.addEventListener('drop', e => { if (e.dataTransfer.files[0]) { file.files = e.dataTransfer.files; picked() } });
         file.onchange = picked;
         function picked() { const f = file.files[0]; if (!f) return; $('fname').textContent = f.name; ready() }
-        function ready() { const f = file.files[0], r = $('ref').files[0]; go.disabled = !(f && /\.(pptx|pdf)$/i.test(f.name) && (!$('usellm').checked || r)) }
+        // Layout engine: hanya untuk .pptx; HTML referensi hanya dibutuhkan oleh alur Docling + LLM
+        function layoutMode() { const f = file.files[0]; return $('engine').value === 'layout' && !(f && /\.pdf$/i.test(f.name)) }
+        function ready() {
+            const f = file.files[0], r = $('ref').files[0], layout = layoutMode();
+            $('llmlabel').textContent = layout ? 'Use LLM to tidy the text (optional)' : 'Use LLM to tidy the layout';
+            $('llmopts').hidden = !$('usellm').checked;
+            $('refrow').hidden = layout;
+            $('hiddenopt').hidden = !layout;
+            go.disabled = !(f && /\.(pptx|pdf)$/i.test(f.name) && (layout || !$('usellm').checked || r));
+        }
         $('ref').onchange = ready;
-        $('usellm').onchange = () => { $('llmopts').hidden = !$('usellm').checked; ready() };
+        $('usellm').onchange = ready;
+        $('engine').onchange = ready;
         $('provider').onchange = e => { $('model').value = e.target.value === 'gemini' ? 'gemini-3.8-flash' : 'qwen2.5-coder:7b' };
 
         go.onclick = async () => {
             const fd = new FormData();
             fd.append('pptx', file.files[0]);
+            fd.append('engine', $('engine').value);
+            fd.append('include_hidden', $('inclhidden').checked);
             fd.append('use_llm', $('usellm').checked);
             fd.append('provider', $('provider').value);
             fd.append('model', $('model').value);
-            if ($('usellm').checked) fd.append('reference', $('ref').files[0]);
+            if ($('usellm').checked && !layoutMode()) fd.append('reference', $('ref').files[0]);
             go.disabled = true; $('msg').textContent = '';
             const r = await fetch('/api/convert', { method: 'POST', body: fd });
             const d = await r.json();
@@ -631,7 +655,8 @@
                 }).join('');
                 if (j.status === 'done') {
                     clearInterval(timer); go.disabled = false;
-                    $('result').innerHTML = '<a class="btn" href="/download/' + id + '">Download DOCX</a>';
+                    $('result').innerHTML = '<a class="btn" href="/download/' + id + '">Download DOCX</a>' +
+                        (j.html ? ' <a class="btn" href="/download/' + id + '/html">Download HTML (CKEditor)</a>' : '');
                     history();
                 } else if (j.status === 'error') {
                     clearInterval(timer); go.disabled = false;

@@ -12,6 +12,7 @@ from flask import Flask, jsonify, render_template, request, send_file
 
 import converter as c  # your original code
 import ckeditor_flow  # PPT -> CKEditor (seamless editing)
+import layout_engine  # PPTX -> DOCX/HTML dari geometri slide (tanpa LLM)
 
 app = Flask(__name__)
 WORK = Path("work")
@@ -53,6 +54,31 @@ def run_job(job_id, pptx: Path, ref, provider, model, use_llm):
         job.update(status="error", error=str(e))
 
 
+def run_layout_job(job_id, pptx: Path, provider, model, use_llm, include_hidden=False):
+    """Layout engine: render (PowerPoint) -> analisa geometri -> [LLM rapikan teks] -> DOCX + HTML."""
+    job = JOBS[job_id]
+    # batas progress (lihat layout_engine.convert_pptx) -> indeks langkah di UI
+    bounds = [0.35, 0.45] + ([0.85] if use_llm else []) + [1.01]
+
+    def on_progress(fraction, _message):
+        job["step"] = next(i for i, b in enumerate(bounds) if fraction < b)
+
+    try:
+        job["status"] = "running"
+        docx_path = WORK / job_id / f"{pptx.stem}.docx"
+        html_path = WORK / job_id / f"{pptx.stem}.html"
+        stats = layout_engine.convert_pptx(
+            pptx, docx_path, html_path,
+            use_llm=use_llm, provider=provider, model=model,
+            work_dir=WORK / job_id / "build", progress=on_progress, include_hidden=include_hidden,
+        )
+        job.update(status="done", step=len(job["steps"]), file=str(docx_path), name=docx_path.name,
+                   html=str(html_path), stats=stats)
+    except Exception as e:
+        traceback.print_exc()
+        job.update(status="error", error=str(e))
+
+
 @app.get("/")
 def index():
     return render_template("index.html")
@@ -78,6 +104,21 @@ def convert():
 
     is_pdf = f.filename.lower().endswith(".pdf")
     use_llm = request.form.get("use_llm", "true") == "true"
+    provider = request.form.get("provider", "gemini")
+    model = request.form.get("model") or "gemini-3.8-flash"
+
+    # layout engine hanya untuk PPTX; PDF tetap lewat Docling
+    if request.form.get("engine", "layout") == "layout" and not is_pdf:
+        steps = ["Render slides with PowerPoint", "Analyse slide layout (no LLM)"]
+        if use_llm:
+            steps.append("Tidy text with LLM")
+        steps.append("Write Word document and CKEditor HTML")
+        JOBS[job_id] = dict(id=job_id, status="queued", step=0, source=f.filename, steps=steps,
+                            llm_step=-1, llm_chars=0, engine="layout")
+        include_hidden = request.form.get("include_hidden", "false") == "true"
+        threading.Thread(target=run_layout_job, args=(job_id, pptx, provider, model, use_llm, include_hidden),
+                         daemon=True).start()
+        return jsonify(id=job_id)
 
     ref = None
     if use_llm:
@@ -86,9 +127,6 @@ def convert():
             return jsonify(error="Please upload a reference .html file."), 400
         ref = str(job_dir / "reference.html")
         r.save(ref)
-
-    provider = request.form.get("provider", "gemini")
-    model = request.form.get("model") or "gemini-3.8-flash"
 
     steps = []
     steps.append("Read the PDF with Docling" if is_pdf else "Read the PPTX with Docling")
@@ -123,6 +161,15 @@ def download(job_id):
     if not job or job.get("status") != "done":
         return "Not ready", 404
     return send_file(job["file"], as_attachment=True, download_name=job["name"])
+
+
+@app.get("/download/<job_id>/html")
+def download_html(job_id):
+    """HTML mandiri (gambar base64) untuk ditempel/dimuat di CKEditor."""
+    job = JOBS.get(job_id)
+    if not job or job.get("status") != "done" or not job.get("html"):
+        return "Not ready", 404
+    return send_file(job["html"], as_attachment=True, download_name=Path(job["html"]).name)
 
 
 if __name__ == "__main__":
