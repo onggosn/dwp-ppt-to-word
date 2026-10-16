@@ -250,6 +250,38 @@
         .ck-body .ck-blk { background: var(--lg); border-radius: 6px; margin: 0 0 14px 14px; padding: 12px 16px; min-height: 90px; }
         .ck-body .ck-blk ul { margin: 0; padding-left: 18px; }
         .ck-body .placeholder { color: var(--muted); font-style: italic; }
+        /* pratinjau gambar slide asli */
+        .canvas.has-img { padding: 0; overflow: hidden; }
+        .canvas.has-img img.slide { width: 100%; height: auto; display: block; }
+        .canvas.has-img .badge { z-index: 1; }
+        .thumb img { width: 100%; height: auto; display: block; border-radius: 3px; margin: 4px 0 2px; border: 1px solid var(--line); }
+        .thumb .warn { color: var(--red); font-weight: 700; }
+        .render-note { font-size: 11px; color: var(--muted); }
+        /* layar ringkasan "perlu dicek" setelah konversi */
+        .chk-head { display: flex; align-items: flex-start; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+        .chk-head h3 { margin: 0 0 4px; font-size: 16px; }
+        .chk-head p { margin: 0; font-size: 13px; color: var(--muted); }
+        .chk-head .sp { flex: 1; }
+        .chk-item { border: 1px solid var(--line); border-left: 4px solid var(--red); border-radius: 8px; margin-bottom: 14px; }
+        .chk-item .top { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+        .chk-item .top b { flex: 1; font-size: 13px; min-width: 160px; }
+        .chk-item .top small { color: var(--muted); font-size: 11px; }
+        .chk-item .cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+        .chk-item .cols > div { padding: 12px 14px; min-width: 0; }
+        .chk-item .cols > div + div { border-left: 1px solid var(--line); }
+        .chk-item .lbl { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-bottom: 6px; }
+        .chk-item img.slide { width: 100%; height: auto; border: 1px solid var(--line); border-radius: 4px; }
+        .chk-item ul.flags { margin: 0 0 10px; padding-left: 18px; font-size: 12px; }
+        .chk-item ul.flags li { margin-bottom: 4px; }
+        .chk-item .res { max-height: 260px; overflow: auto; font-size: 12px; line-height: 1.5; background: var(--lg); border-radius: 6px; padding: 8px 10px; }
+        .chk-item .res img { max-width: 100%; height: auto; }
+        .chk-item .res table { border-collapse: collapse; width: 100%; } .chk-item .res td { border: 1px solid var(--line); padding: 3px; vertical-align: top; }
+        .chk-ok { background: var(--lg); border-radius: 8px; padding: 14px; font-size: 13px; color: var(--muted); }
+        .ck-tools { display: flex; justify-content: flex-end; margin-bottom: 8px; }
+        .ck-body .hl-slide { outline: 3px solid var(--red); outline-offset: 4px; border-radius: 2px; }
+        .ck-body img { max-width: 100%; height: auto; }
+        .ck-body table { border-collapse: collapse; width: 100%; } .ck-body td { border: 1px solid var(--line); padding: 4px; vertical-align: top; }
+        @media (max-width: 800px) { .chk-item .cols { grid-template-columns: 1fr; } .chk-item .cols > div + div { border-left: 0; border-top: 1px solid var(--line); } }
         .ck-body h2, .ck-body h3 { margin: 18px 0 4px; }
         .ck-body table { margin: 8px 0; }
         .ck-body td { border: 1px solid var(--line); padding: 4px 8px; }
@@ -358,8 +390,9 @@
                                 <span>Maksimal satu file per konversi</span>
                                 <input type="file" id="file" accept=".pptx,.pdf" hidden>
                             </div>
-                            <label class="chk"><input type="checkbox" id="usellm" checked> Gunakan LLM untuk merapikan layout</label>
-                            <div id="llmopts">
+                            <label class="chk"><input type="checkbox" id="inclhidden"> Ikutkan slide yang disembunyikan (hidden)</label>
+                            <label class="chk"><input type="checkbox" id="usellm"> <span id="llmlabel">Gunakan LLM untuk merapikan teks (opsional)</span></label>
+                            <div id="llmopts" hidden>
                                 <div class="row">
                                     <div>
                                         <label for="provider">Provider LLM</label>
@@ -372,10 +405,10 @@
                                         <label for="model">Model</label>
                                         <input type="text" id="model" value="gemini-3.8-flash">
                                     </div>
-                                    <div class="refbox">
-                                        <label for="ref">File HTML referensi (wajib)</label>
+                                    <div class="refbox" id="refbox" hidden>
+                                        <label for="ref">File HTML referensi (wajib untuk PDF)</label>
                                         <input type="file" id="ref" accept=".html,.htm">
-                                        <small id="refhint">Konverter menyalin heading, daftar, dan gaya dari file ini.</small>
+                                        <small id="refhint">PDF diproses dengan Docling + LLM; konverter menyalin heading, daftar, dan gaya dari file ini.</small>
                                     </div>
                                 </div>
                             </div>
@@ -437,7 +470,7 @@
                                     </div>
                                     <div id="pptReady">
                                     <div class="ppt-top">
-                                        <span class="lbl">Pratinjau PPT (SharePoint embed) · <span id="srcName"></span></span>
+                                        <span class="lbl">Pratinjau PPT (SharePoint embed) · <span id="srcName"></span><span class="render-note" id="renderNote"></span></span>
                                         <a href="#" id="btnSharepoint">Buka di SharePoint</a>
                                         <button type="button" class="ghost sm" id="btnDesktop">Buka di Desktop</button>
                                         <span class="sp"></span>
@@ -464,7 +497,20 @@
                                     </div>
                                 </div>
                                 <div id="ckWrap" hidden>
+                                    <div class="ck-tools"><button type="button" class="ghost sm" id="btnCheck" hidden></button></div>
                                     <div class="ck-body" id="ckBody"></div>
+                                </div>
+                                <!-- Langkah setelah konversi: slide yang otomatis ditandai perlu dicek -->
+                                <div id="checkWrap" hidden>
+                                    <div class="chk-head">
+                                        <div>
+                                            <h3>Cek hasil konversi</h3>
+                                            <p id="chkSummary"></p>
+                                        </div>
+                                        <span class="sp"></span>
+                                        <button type="button" class="primary" id="btnToCk">Lanjut ke CKEditor</button>
+                                    </div>
+                                    <div id="chkList"></div>
                                 </div>
                             </div>
                         </div>
@@ -539,21 +585,29 @@
         drop.addEventListener('drop', e => { if (e.dataTransfer.files[0]) { file.files = e.dataTransfer.files; picked(); } });
         file.onchange = picked;
         function picked() { const f = file.files[0]; if (!f) return; $('fname').textContent = f.name; ready(); }
+        // PPTX: layout engine (tanpa LLM; LLM opsional hanya merapikan teks).
+        // PDF: tetap Docling + LLM layout, butuh HTML referensi.
+        const isPdf = () => { const f = file.files[0]; return !!(f && /\.pdf$/i.test(f.name)); };
         function ready() {
-            const f = file.files[0], r = $('ref').files[0];
-            go.disabled = !(f && /\.(pptx|pdf)$/i.test(f.name) && (!$('usellm').checked || r));
+            const f = file.files[0], r = $('ref').files[0], pdf = isPdf();
+            $('llmlabel').textContent = pdf ? 'Gunakan LLM untuk merapikan layout (PDF)' : 'Gunakan LLM untuk merapikan teks (opsional)';
+            $('llmopts').hidden = !$('usellm').checked;
+            $('refbox').hidden = !pdf;
+            go.disabled = !(f && /\.(pptx|pdf)$/i.test(f.name) && (!pdf || !$('usellm').checked || r));
         }
         $('ref').onchange = ready;
-        $('usellm').onchange = () => { $('llmopts').hidden = !$('usellm').checked; ready(); };
+        $('usellm').onchange = ready;
         $('provider').onchange = e => { $('model').value = e.target.value === 'gemini' ? 'gemini-3.8-flash' : 'qwen2.5-coder:7b'; };
 
         go.onclick = async () => {
             const fd = new FormData();
             fd.append('pptx', file.files[0]);
+            fd.append('engine', 'layout');
+            fd.append('include_hidden', $('inclhidden').checked);
             fd.append('use_llm', $('usellm').checked);
             fd.append('provider', $('provider').value);
             fd.append('model', $('model').value);
-            if ($('usellm').checked) fd.append('reference', $('ref').files[0]);
+            if ($('usellm').checked && isPdf()) fd.append('reference', $('ref').files[0]);
             go.disabled = true; $('msg').textContent = '';
             try {
                 const r = await fetch('/api/convert', { method: 'POST', body: fd });
@@ -580,13 +634,14 @@
                     if (!running) return '<li class="' + cls + '"><span class="dot"></span><span>' + t + '</span></li>';
                     let detail = 'Sedang berjalan...';
                     if (i === j.llm_step) detail = j.llm_chars > 0 ? 'Menerima respons... ' + j.llm_chars.toLocaleString() + ' karakter' : 'Menunggu model mulai merespons...';
-                    else if (i === 0 && secs > 15) detail = 'Masih membaca. Pada eksekusi pertama, Docling mungkin mengunduh model.';
+                    else if (i === 0 && secs > 15) detail = j.engine === 'layout' ? 'Masih merender slide dengan PowerPoint.' : 'Masih membaca. Pada eksekusi pertama, Docling mungkin mengunduh model.';
                     return '<li class="run"><span class="dot"></span><span>' + t + '<span class="meta">' + elapsed + '</span>' +
                         '<span class="bar"><i></i></span><span class="detail">' + detail + '</span></span></li>';
                 }).join('');
                 if (j.status === 'done') {
                     clearInterval(timer); go.disabled = false;
-                    $('result').innerHTML = '<a class="btn" href="/download/' + id + '">Unduh DOCX</a>';
+                    $('result').innerHTML = '<a class="btn" href="/download/' + id + '">Unduh DOCX</a>' +
+                        (j.html ? ' <a class="btn" href="/download/' + id + '/html">Unduh HTML (CKEditor)</a>' : '');
                     history();
                 } else if (j.status === 'error') {
                     clearInterval(timer); go.disabled = false;
@@ -658,6 +713,7 @@
 
         let cur = 2, mode = 'ppt', converting = false, timerConv = null, ckReady = false;
         let jobId = null, ckHtml = '', pptExists = false;
+        let RENDER = 'unavailable', renderTimer = null, CHECK = [];   // CHECK: slide yang ditandai perlu dicek
         const METHOD = {
             tag: 'Berdasarkan tag SEC pada objek / catatan PPT.',
             judul: 'Berdasarkan judul slide yang sama dengan nama sub-section.',
@@ -669,21 +725,29 @@
         $('otherDocs').innerHTML = OTHER_DOCS.map(d => '<div class="doc"><span>' + esc(d) + '</span><span class="chev">v</span></div>').join('');
 
         function renderThumbs() {
-            $('thumbs').innerHTML = SLIDES.map((s, i) =>
-                '<button type="button" class="thumb' + (i === cur ? ' on' : '') + '" data-i="' + i + '" aria-label="Slide ' + (i + 1) + '">' +
-                '<div class="n"><span>Slide ' + (i + 1) + '</span><span>' + (i === cur ? 'Aktif' : '') + '</span></div>' +
-                '<div class="t">' + esc(s.t) + '</div>' +
-                '<div class="ln"></div><div class="ln" style="width:70%"></div>' +
-                '<div class="code">Bagian ' + s.s + '</div></button>'
-            ).join('');
+            $('thumbs').innerHTML = SLIDES.map((s, i) => {
+                const warn = ckReady && s.f && s.f.length;
+                return '<button type="button" class="thumb' + (i === cur ? ' on' : '') + '" data-i="' + i + '" aria-label="Slide ' + (i + 1) + '">' +
+                    '<div class="n"><span>Slide ' + (i + 1) + (warn ? ' <span class="warn" title="Perlu dicek">⚠</span>' : '') + '</span><span>' + (i === cur ? 'Aktif' : '') + '</span></div>' +
+                    (hasImg() ? '<img loading="lazy" src="' + slideImg(s, 'thumb') + '" alt="">'
+                        : '<div class="t">' + esc(s.t) + '</div><div class="ln"></div><div class="ln" style="width:70%"></div>') +
+                    '<div class="code">Bagian ' + s.s + '</div></button>';
+            }).join('');
             document.querySelectorAll('.thumb').forEach(b => b.onclick = () => { cur = +b.dataset.i; render(); });
         }
 
         function renderSlide() {
             const s = SLIDES[cur];
+            const canvas = $('canvas'), img = hasImg();
+            canvas.classList.toggle('has-img', !!img);
+            canvas.innerHTML = '<span class="badge" id="badge"></span>' + (img
+                ? '<img class="slide" src="' + slideImg(s, 'preview') + '" alt="Slide ' + (cur + 1) + ': ' + esc(s.t) + '">'
+                : '<h4 id="sTitle"></h4><ul id="sBul"></ul>');
             $('badge').textContent = '→ ' + s.s + ' ' + (nodeOf(s.s) ? nodeOf(s.s).t : '');
-            $('sTitle').textContent = 'Slide ' + (cur + 1) + ': ' + s.t;
-            $('sBul').innerHTML = s.b.map(x => '<li>' + esc(x) + '</li>').join('');
+            if (!img) {
+                $('sTitle').textContent = 'Slide ' + (cur + 1) + ': ' + s.t;
+                $('sBul').innerHTML = s.b.map(x => '<li>' + esc(x) + '</li>').join('');
+            }
             $('pos').textContent = 'Slide ' + (cur + 1) + ' / ' + SLIDES.length;
             $('prev').disabled = cur === 0;
             $('next').disabled = cur === SLIDES.length - 1;
@@ -726,15 +790,50 @@
         }
 
         function renderMode() {
-            const ck = mode === 'ck';
-            $('modeCk').classList.toggle('on', ck); $('modeCk').setAttribute('aria-pressed', ck);
-            $('modePpt').classList.toggle('on', !ck); $('modePpt').setAttribute('aria-pressed', !ck);
-            $('pptView').hidden = ck;
+            const ck = mode === 'ck', check = mode === 'check';
+            $('modeCk').classList.toggle('on', ck || check); $('modeCk').setAttribute('aria-pressed', ck || check);
+            $('modePpt').classList.toggle('on', mode === 'ppt'); $('modePpt').setAttribute('aria-pressed', mode === 'ppt');
+            $('pptView').hidden = mode !== 'ppt';
             $('pptEmpty').hidden = pptExists;
             $('pptReady').hidden = !pptExists;
             $('ckWrap').hidden = !ck;
+            $('checkWrap').hidden = !check;
             $('btnConvert').textContent = ckReady ? 'Konversi ulang ke CKEditor' : 'Konversi ke CKEditor';
+            $('btnCheck').hidden = !(ckReady && CHECK.length);
+            $('btnCheck').textContent = '⚠ Slide perlu dicek (' + CHECK.length + ')';
             if (ck) renderCk();
+            if (check) renderCheck();
+        }
+
+        // Langkah setelah konversi: hanya slide yang otomatis ditandai perlu dicek (tanpa pelabelan oleh user)
+        function renderCheck() {
+            const total = SLIDES.length;
+            $('chkSummary').textContent = CHECK.length
+                ? CHECK.length + ' dari ' + total + ' slide sebaiknya dicek. Slide lain tidak terdeteksi masalah. Hasil sudah dimasukkan ke CKEditor; bagian ini hanya petunjuk.'
+                : 'Tidak ada slide yang terdeteksi bermasalah.';
+            if (!CHECK.length) { $('chkList').innerHTML = '<div class="chk-ok">Semua slide terkonversi tanpa tanda. Lanjutkan ke CKEditor untuk mengedit.</div>'; return; }
+            $('chkList').innerHTML = CHECK.map(s => {
+                const i = SLIDES.indexOf(s);
+                return '<div class="chk-item">' +
+                    '<div class="top"><b>Slide ' + (i + 1) + ': ' + esc(s.t) + '</b><small>' + esc(pathOf(s.s)) + '</small>' +
+                    '<button type="button" class="ghost sm" data-jump="' + s.n + '">Buka di CKEditor</button></div>' +
+                    '<div class="cols">' +
+                    '<div><div class="lbl">Slide asli</div>' + (hasImg() ? '<img class="slide" loading="lazy" src="' + slideImg(s, 'preview') + '" alt="Slide ' + (i + 1) + '">'
+                        : '<div class="render-note">Pratinjau gambar tidak tersedia.</div>') + '</div>' +
+                    '<div><div class="lbl">Kenapa perlu dicek</div><ul class="flags">' + s.f.map(f => '<li>' + esc(f.msg) + '</li>').join('') + '</ul>' +
+                    '<div class="lbl">Hasil di CKEditor</div><div class="res">' + (s.html || '') + '</div></div>' +
+                    '</div></div>';
+            }).join('');
+            document.querySelectorAll('[data-jump]').forEach(b => b.onclick = () => jumpTo(+b.dataset.jump));
+        }
+
+        function jumpTo(n) {
+            mode = 'ck'; renderMode();
+            const h = $('ckBody').querySelector('[data-slide="' + n + '"]');
+            if (!h) return;
+            h.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            h.classList.add('hl-slide');
+            setTimeout(() => h.classList.remove('hl-slide'), 2500);
         }
 
         function render() { renderThumbs(); renderSlide(); renderToc(); renderMode(); }
@@ -742,6 +841,8 @@
         $('prev').onclick = () => { if (cur > 0) { cur--; render(); } };
         $('next').onclick = () => { if (cur < SLIDES.length - 1) { cur++; render(); } };
         $('modeCk').onclick = () => { mode = 'ck'; renderMode(); };
+        $('btnToCk').onclick = () => { mode = 'ck'; renderMode(); };
+        $('btnCheck').onclick = () => { mode = 'check'; renderMode(); };
         $('modePpt').onclick = () => { mode = 'ppt'; renderMode(); };
         $('tocMin').onclick = () => { $('edBody').classList.add('toc-min'); };
         $('tocMax').onclick = () => { $('edBody').classList.remove('toc-min'); };
@@ -789,11 +890,13 @@
         function finishConvert() {
             converting = false;
             ckReady = true;
-            mode = 'ck';
+            CHECK = SLIDES.filter(s => s.f && s.f.length);
+            // ada slide bertanda -> tampilkan ringkasan cek dulu, baru masuk CKEditor
+            mode = CHECK.length ? 'check' : 'ck';
             setTimeout(() => {
                 showModal(false);
                 render();
-                toast('Konversi selesai. Dokumen dibuka di CKEditor.');
+                toast(CHECK.length ? 'Konversi selesai. ' + CHECK.length + ' slide sebaiknya dicek.' : 'Konversi selesai. Dokumen dibuka di CKEditor.');
             }, 600);
         }
 
@@ -819,7 +922,10 @@
                         clearInterval(timerConv);
                         const h = await (await fetch('/api/ck/html/' + jobId)).json();
                         ckHtml = h.html;
-                        SLIDES = SLIDES.map((s, i) => Object.assign({}, s, { s: h.slides[i].section, m: h.slides[i].method }));
+                        SLIDES = SLIDES.map((s, i) => Object.assign({}, s, {
+                            s: h.slides[i].section, m: h.slides[i].method, f: h.slides[i].flags || [], html: h.slides[i].html || ''
+                        }));
+                        if (h.render && h.render !== RENDER) setRender(h.render);
                         finishConvert();
                     }
                 } catch (e) { clearInterval(timerConv); failConvert(e.message); }
@@ -842,12 +948,30 @@
 
         // PPT diambil dari "OneDrive" (mockup: work/onedrive di server)
         function applyPpt(d) {
-            jobId = d.id; ckHtml = ''; ckReady = false; cur = 0; pptExists = true;
+            jobId = d.id; ckHtml = ''; ckReady = false; cur = 0; pptExists = true; CHECK = [];
             TOC = d.toc.map(n => ({ c: n.code, t: n.title, l: n.level }));
-            SLIDES = d.slides.map(s => ({ t: s.title, b: s.lines.slice(0, 8), s: s.section, m: s.method }));
+            SLIDES = d.slides.map(s => ({ n: s.n, t: s.title, b: s.lines.slice(0, 8), s: s.section, m: s.method, f: s.flags || [] }));
             $('srcName').textContent = d.source + ' · ' + SLIDES.length + ' slide';
+            setRender(d.render);
             render();
         }
+
+        // Render slide (gambar asli) berjalan di server sejak PPT dimuat; pratinjau teks dipakai sampai selesai.
+        function setRender(state) {
+            RENDER = state || 'unavailable';
+            clearInterval(renderTimer);
+            $('renderNote').textContent = RENDER === 'running' ? ' · menyiapkan pratinjau gambar slide…'
+                : RENDER === 'unavailable' ? ' · pratinjau gambar tidak tersedia (PowerPoint tidak ada di server)' : '';
+            if (RENDER !== 'running' || !jobId) return;
+            renderTimer = setInterval(async () => {
+                try {
+                    const r = await (await fetch('/api/ck/render/' + jobId)).json();
+                    if (r.render !== 'running') { setRender(r.render); render(); }
+                } catch (e) { clearInterval(renderTimer); }
+            }, 1500);
+        }
+        const slideImg = (s, kind) => '/api/ck/slide/' + jobId + '/' + kind + s.n + '.jpg';
+        const hasImg = () => jobId && RENDER === 'done';
 
         async function loadPpt() {
             try {

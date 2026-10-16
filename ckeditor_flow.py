@@ -31,6 +31,7 @@ import uuid
 from pathlib import Path
 
 from flask import Blueprint, abort, jsonify, request, send_from_directory
+from PIL import Image
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 
@@ -161,15 +162,36 @@ def extract_slides(pptx_path, media_dir):
         if not title:
             first = next((b for b in blocks if b.type in ("heading", "para", "bullet")), None)
             title = _text(first.runs)[:80] if first else f"Slide {n}"
-        slides.append({"n": n, "title": title, "blocks": blocks, "tags_text": tags_text, "pending": pending})
+        slides.append({"n": n, "title": title, "blocks": blocks, "tags_text": tags_text, "pending": pending,
+                       "flags": layout_engine.slide_flags(info, blocks)})
     return slides
 
 
-def render_media(pptx_path, job_dir, slides, on_slide=None):
-    """Render slide dengan PowerPoint lalu crop tiap gambar. Tanpa PowerPoint: gambar asli dari PPTX.
-    Baris gambar yang gagal disimpan dibuang."""
+def render_previews(pptx_path, job_dir, numbers):
+    """Render semua slide dengan PowerPoint (sekali per job) + pratinjau JPEG untuk halaman /dwp:
+    slides/preview{n}.jpg (besar) dan slides/thumb{n}.jpg (thumbnail). False kalau PowerPoint tidak ada."""
+    slides_dir = Path(job_dir) / "slides"
+    if not (slides_dir / "slide1.png").exists():
+        if not layout_engine.render_slides(Path(pptx_path), slides_dir):
+            return False
+    for n in numbers:
+        src = slides_dir / f"slide{n}.png"
+        if src.exists() and not (slides_dir / f"thumb{n}.jpg").exists():
+            im = Image.open(src).convert("RGB")
+            big = im.copy()
+            big.thumbnail((1400, 1400))
+            big.save(slides_dir / f"preview{n}.jpg", quality=82)
+            im.thumbnail((360, 360))
+            im.save(slides_dir / f"thumb{n}.jpg", quality=80)
+    return True
+
+
+def render_media(pptx_path, job_dir, slides, on_slide=None, rendered=None):
+    """Crop tiap gambar dari render slide (render dibuat kalau belum ada). Tanpa PowerPoint: gambar asli
+    dari PPTX. Baris gambar yang gagal disimpan dibuang. Aman dipanggil ulang (konversi ulang)."""
     job_dir = Path(job_dir)
-    rendered = layout_engine.render_slides(Path(pptx_path), job_dir / "slides")
+    if rendered is None:
+        rendered = render_previews(pptx_path, job_dir, [s["n"] for s in slides])
     for s in slides:
         render = layout_engine.load_render(job_dir / "slides" / f"slide{s['n']}.png") if rendered else None
         for b in s["blocks"]:
@@ -177,13 +199,13 @@ def render_media(pptx_path, job_dir, slides, on_slide=None):
                 continue
             rows = []
             for row in b.rows:
-                box = s["pending"].get(row["img"])
-                saved = layout_engine.save_box_image(box, row["img"], render) if box else None
+                key = row.get("key", row["img"])         # path tujuan awal = kunci ke box di slide["pending"]
+                box = s["pending"].get(key)
+                saved = layout_engine.save_box_image(box, key, render) if box else None
                 if saved:
-                    rows.append(dict(row, img=saved))
+                    rows.append(dict(row, img=saved, key=key))
             b.rows = rows
         s["blocks"] = [b for b in s["blocks"] if b.type != "figures" or b.rows]
-        s["pending"] = {}
         if on_slide:
             on_slide(s["n"])
     return rendered
@@ -230,7 +252,8 @@ def _public_slide(s, mapping):
         elif b.type == "table":
             flat.append("[Tabel %d baris]" % len(b.rows))
     m = mapping[s["n"]]
-    return {"n": s["n"], "title": s["title"], "lines": flat, "section": m["code"], "method": m["method"]}
+    return {"n": s["n"], "title": s["title"], "lines": flat, "section": m["code"], "method": m["method"],
+            "flags": s.get("flags", [])}
 
 
 # ------------------------------------------------------------------ flask wiring
@@ -269,13 +292,26 @@ def register(app, work_dir):
             raise ValueError("PPTX tidak memiliki slide.")
         j = dict(id=job_id, source=source, dir=d, src=Path(src), slides=slides, toc=toc, status="uploaded",
                  done=0, total=len(slides), pct=0, phase=0, steps=[{"t": t, "state": "wait"} for t in STEPS],
-                 html="", error=None)
+                 html="", error=None, render="running", render_done=threading.Event())
         j["mapping"] = do_map(j)
         jobs[job_id] = j
+        threading.Thread(target=_render_bg, args=(j,), daemon=True).start()
         return j
 
+    def _render_bg(j):
+        """Render slide di latar belakang saat PPT dimuat: pratinjau gambar asli di tab PPT, dan render
+        yang sama dipakai lagi saat konversi (tidak render dua kali)."""
+        try:
+            ok = render_previews(j["src"], j["dir"], [s["n"] for s in j["slides"]])
+            j["render"] = "done" if ok else "unavailable"
+        except Exception as e:
+            j["render"] = "unavailable"
+            print(f"  [!] Render pratinjau gagal: {e}")
+        finally:
+            j["render_done"].set()
+
     def payload(j):
-        return dict(exists=True, id=j["id"], source=j["source"], toc=j["toc"],
+        return dict(exists=True, id=j["id"], source=j["source"], toc=j["toc"], render=j["render"],
                     slides=[_public_slide(s, j["mapping"]) for s in j["slides"]])
 
     # Mockup OneDrive: satu dokumen aktif, disimpan di work/onedrive supaya bertahan antar refresh/restart.
@@ -332,9 +368,11 @@ def register(app, work_dir):
                 if STEP_DELAY:
                     time.sleep(STEP_DELAY)
 
-            # 1. membaca slide: render PowerPoint + crop gambar (progress per slide setelah render)
+            # 1. membaca slide: tunggu render latar belakang (dimulai saat PPT dimuat), lalu crop gambar
             tick(0, 0)
-            render_media(j["src"], j["dir"], j["slides"], on_slide=lambda n: tick(0, n))
+            j["render_done"].wait(timeout=900)
+            render_media(j["src"], j["dir"], j["slides"], rendered=j["render"] == "done",
+                         on_slide=lambda n: tick(0, j["slides"].index(next(s for s in j["slides"] if s["n"] == n)) + 1))
             j["mapping"] = do_map(j)
             for i in range(1, total + 1):          # 2. memetakan ke section
                 tick(1, i)
@@ -357,7 +395,25 @@ def register(app, work_dir):
         j = get_job(job_id)
         if j["status"] != "done":
             return jsonify(error="Konversi belum selesai."), 409
-        return jsonify(html=j["html"], slides=[_public_slide(s, j["mapping"]) for s in j["slides"]])
+        slides = []
+        for s in j["slides"]:
+            pub = _public_slide(s, j["mapping"])
+            if pub["flags"]:
+                pub["html"] = _slide_html(s, j["id"], 3)     # untuk layar ringkasan "perlu dicek"
+            slides.append(pub)
+        return jsonify(html=j["html"], slides=slides, render=j["render"])
+
+    @bp.get("/render/<job_id>")
+    def render_state(job_id):
+        return jsonify(render=get_job(job_id)["render"])
+
+    @bp.get("/slide/<job_id>/<path:name>")
+    def slide_image(job_id, name):
+        """Pratinjau slide: preview{n}.jpg / thumb{n}.jpg."""
+        j = get_job(job_id)
+        if not re.fullmatch(r"(preview|thumb)\d+\.jpg", name):
+            abort(404)
+        return send_from_directory(j["dir"] / "slides", name)
 
     @bp.get("/media/<job_id>/<path:name>")
     def media(job_id, name):

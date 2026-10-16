@@ -44,9 +44,12 @@ DEFAULT_TEMPLATE = HERE / "docs" / "example.docx"
 ICON_MAX_W = 0.08         # gambar lebih sempit dari ini = ikon/logo, dibuang
 WIDE_MIN_W = 0.5          # gambar selebar ini atau lebih = baris penuh (colspan)
 LABEL_MAX_H = 0.08        # label/caption maksimal setinggi ini
+LABEL_MAX_H_FILLED = 0.12 # ... kecuali bilah berwarna (caption grafik panjang)
 LABEL_MAX_CHARS = 260
 NOTE_MIN_Y = 0.9          # teks yang mulai di bawah ini = catatan kaki
 STICKER_MAX_W = 0.12      # teks kecil di atas elemen lain ("Tindak Lanjut", "UPDATED") = stiker, dibuang
+PANEL_MIN_AREA = 0.06     # shape latar minimal seluas ini untuk dianggap panel teks
+TABLE_MAX_COLS = 12      # tabel PPT lebih lebar dari ini dijadikan gambar (tidak muat di halaman Word)
 FIG_COL_SPLIT = (0.72, 0.28)   # rasio kolom tabel gambar di example.docx (6509/2507 twips)
 
 ProgressFn = Callable[[float, str], None]
@@ -64,6 +67,7 @@ class Para:
     level: int = 0
     bullet: bool = False
     numbered: bool = False    # buAutoNum -> list bernomor (1. 2. 3.), selain itu bullet
+    num_fmt: str = "decimal"  # format nomor Word: decimal | lowerLetter | upperLetter | lowerRoman | upperRoman
 
     @property
     def text(self) -> str:
@@ -84,6 +88,7 @@ class Box:
     col_widths: list = field(default_factory=list)  # tabel grid: lebar relatif kolom (dari header di slide)
     is_title: bool = False
     is_placeholder_body: bool = False
+    filled: bool = False      # kotak teks berwarna (node diagram / bilah), bukan text box polos
 
     @property
     def r(self) -> float:
@@ -115,16 +120,18 @@ class Block:
     runs: list = field(default_factory=list)
     numbered: bool = False
     col_widths: list = field(default_factory=list)   # table: lebar relatif kolom (kosong = rata)
+    num_fmt: str = "decimal"                          # bullet bernomor: format nomor Word
     rows: list = field(default_factory=list)     # figures: [{"img": Path, "wide": bool, "caption": runs}], table: [[str]]
 
 
 # --------------------------------------------------------------------------- 1. collect
-_CONTROL_RE = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f￾￿-]")
+_CONTROL_RE = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f￾￿-​-‍⁠﻿]")
 
 
 def _clean(text: str, vt: str = " ") -> str:
-    """Buang karakter kontrol yang tidak valid di XML Word dan karakter Private Use Area
-    (simbol font Wingdings/Symbol yang tampil sebagai kotak di luar PowerPoint).
+    """Buang karakter kontrol yang tidak valid di XML Word, karakter Private Use Area
+    (simbol font Wingdings/Symbol yang tampil sebagai kotak di luar PowerPoint) dan karakter
+    tak terlihat (zero-width), supaya placeholder yang isinya cuma itu dianggap kosong.
     \\v (baris baru di sel tabel / text box PowerPoint) diganti `vt`."""
     return _CONTROL_RE.sub("", text.replace("\x0b", vt))
 
@@ -172,18 +179,51 @@ def _para_runs(p) -> list:
     return [r for r in out if r[0]]
 
 
+_AUTONUM_FMT = (("alphaLc", "lowerLetter"), ("alphaUc", "upperLetter"),
+                ("romanLc", "lowerRoman"), ("romanUc", "upperRoman"))
+
+
 def _bullet_kind(p, placeholder_body: bool) -> tuple:
-    """(bullet?, bernomor?) dari markup paragraf; tanpa markup: placeholder isi / indentasi = bullet."""
+    """(bullet?, bernomor?, format nomor) dari markup paragraf; tanpa markup: placeholder isi /
+    indentasi = bullet."""
     ppr = p._p.pPr
     if ppr is not None:
         tags = {c.tag.split("}")[1] for c in ppr}
         if "buNone" in tags:
-            return False, False
+            return False, False, "decimal"
         if "buAutoNum" in tags:
-            return True, True
+            kind = ppr.find(qn("a:buAutoNum")).get("type", "")
+            fmt = next((f for prefix, f in _AUTONUM_FMT if kind.startswith(prefix)), "decimal")
+            return True, True, fmt
         if tags & {"buChar", "buBlip"}:
-            return True, False
-    return placeholder_body or p.level > 0, False
+            return True, False, "decimal"
+    return placeholder_body or p.level > 0, False, "decimal"
+
+
+_MANUAL_NUM_RE = re.compile(r"^\s*(\d{1,2})[.)]\s+")
+
+
+def _continue_manual_numbers(blocks: list) -> list:
+    """Paragraf yang nomornya diketik manual ("2.   Kebijakan ...") padahal item sebelumnya di level
+    yang sama memakai nomor otomatis (1.) dijadikan item bernomor lanjutan, asalkan nomornya pas
+    berurutan. Word lalu melanjutkan penomorannya sendiri (1 -> 2)."""
+    out = []
+    for bl in blocks:
+        m = _MANUAL_NUM_RE.match("".join(r[0] for r in bl.runs)) if bl.type == "para" else None
+        if m:
+            same = [b for b in out if b.type == "bullet" and b.numbered and b.level == bl.level
+                    and b.num_fmt == "decimal"]
+            if same and int(m.group(1)) == len(same) + 1:
+                runs, cut = list(bl.runs), m.end()
+                while runs and cut >= len(runs[0][0]):     # buang awalan "2.   " dari run-run pertama
+                    cut -= len(runs[0][0])
+                    runs.pop(0)
+                if runs:
+                    runs[0] = (runs[0][0][cut:],) + tuple(runs[0][1:])
+                out.append(Block("bullet", bl.level, runs, numbered=True, num_fmt="decimal"))
+                continue
+        out.append(bl)
+    return out
 
 
 def _xfrm(grp):
@@ -199,6 +239,20 @@ def _xfrm(grp):
         return None
     # tanpa chOff/chExt: anak sudah memakai koordinat yang sama dengan group
     return off, ext, get("a:chOff", "x", "y") or off, get("a:chExt", "cx", "cy") or ext
+
+
+def _has_fill(s) -> bool:
+    """Shape punya isian warna: eksplisit di spPr, atau dari style tema (fillRef idx > 0) tanpa noFill."""
+    try:
+        sppr = s._element.spPr
+    except AttributeError:
+        return False
+    if sppr.find(qn("a:noFill")) is not None:
+        return False
+    if any(sppr.find(qn(t)) is not None for t in ("a:solidFill", "a:gradFill", "a:pattFill", "a:blipFill")):
+        return True
+    ref = s._element.find(".//" + qn("a:fillRef"))
+    return ref is not None and ref.get("idx", "0") != "0"
 
 
 def collect(shapes, W: int, H: int, tf=None) -> list:
@@ -248,6 +302,7 @@ def collect(shapes, W: int, H: int, tf=None) -> list:
                     box.paras.append(Para(runs, int(p.level), *_bullet_kind(p, box.is_placeholder_body)))
             if not box.paras:
                 box.kind = "shape"    # kotak/panah/garis tanpa teks: sinyal untuk deteksi diagram
+            box.filled = _has_fill(s)
         else:
             box.kind = "shape"        # connector / garis
         out.append(box)
@@ -277,8 +332,10 @@ def _is_label(b: Box) -> bool:
     """Teks pendek, (hampir) kapital semua, tidak tinggi -> label / caption / sub-judul."""
     t = b.text
     letters = [c for c in t if c.isalpha()]
+    # bilah berwarna (caption grafik) boleh lebih tinggi: caption panjang bisa sampai 4 baris
+    max_h = LABEL_MAX_H_FILLED if b.filled else LABEL_MAX_H
     return (b.kind == "text" and not b.is_title and bool(t) and len(t) <= LABEL_MAX_CHARS
-            and b.h <= LABEL_MAX_H and bool(letters)
+            and b.h <= max_h and bool(letters)
             and sum(c.isupper() for c in letters) / len(letters) > 0.8)
 
 
@@ -295,8 +352,10 @@ def merge_pictures(pics: list) -> list:
                 if small and _inter(a, b) / small > 0.2:
                     x, y = min(a.x, b.x), min(a.y, b.y)
                     r, btm = max(a.r, b.r), max(a.b, b.b)
-                    units[i] = Box("picture", x, y, r - x, btm - y, name=a.name,
-                                   images=a.images + b.images)
+                    # nama khusus (diagram / grid-image) dipertahankan supaya asal unit tetap diketahui
+                    name = next((u.name for u in (a, b) if u.name in ("diagram", "grid-image")), a.name)
+                    units[i] = Box("picture", x, y, r - x, btm - y, name=name,
+                                   images=a.images + b.images, rows=a.rows or b.rows)
                     del units[j]
                     changed = True
                     break
@@ -306,7 +365,8 @@ def merge_pictures(pics: list) -> list:
 
 
 def _pick_title(boxes: list) -> Optional[Box]:
-    t = next((b for b in boxes if b.is_title), None)
+    # placeholder judul yang kosong tersimpan sebagai "shape" -> bukan judul
+    t = next((b for b in boxes if b.is_title and b.kind == "text"), None)
     if t:
         return t
     named = [b for b in boxes if b.kind == "text" and re.match(r"(title|judul)", b.name, re.I)]
@@ -318,7 +378,9 @@ GRID_HEADER_MAX_CHARS = 45
 GRID_MIN_COLS = 3
 GRID_MIN_ROWS = 2
 GRID_HEADER_GAP = 0.022        # sel header grid (hampir) menempel; celah lebih lebar = bukan satu header
-GRID_FOOTER_Y = 0.96           # teks yang mulai di bawah ini (legenda) tidak masuk tabel
+GRID_WITH_MARKS_AS_IMAGE = True  # grid dengan titik progres (TW I-IV) diambil sebagai gambar; False = tabel
+                                 # Word dengan label "(TW II)" di teks deliverable
+GRID_FOOTER_Y = 0.96          # teks yang mulai di bawah ini (legenda) tidak masuk tabel
 GRID_ROW_COVERAGE = 0.85       # minimal porsi kotak isi yang masuk ke baris; kurang = mode daftar per kolom
 GRID_LIST_GAP = 0.05           # mode daftar: jarak vertikal maksimum antar kotak dalam satu kolom
 GRID_COLUMN_FIT = 0.8       # >= 75% kotak isi minimal 80% lebarnya berada di dalam kolomnya
@@ -453,7 +515,9 @@ def detect_grids(texts: list, marks: list = ()) -> tuple:
                         cells[c].append(t)
                         row_used.add(id(t))
                         prev_b = t.b
-                if sum(1 for c in cells if c) < GRID_MIN_COLS:
+                # daftar sungguhan: minimal 3 kolom terisi dan minimal 2 kolom berisi >= 2 item
+                # (matriks berwarna 2x2 dengan satu kotak per kolom = diagram, bukan daftar)
+                if sum(1 for c in cells if c) < GRID_MIN_COLS or sum(1 for c in cells if len(c) >= 2) < 2:
                     continue
                 rows = [cells]
                 bands = [(top, max(t.b for c in cells for t in c) + 0.005)]
@@ -465,6 +529,19 @@ def detect_grids(texts: list, marks: list = ()) -> tuple:
                 continue
             notes, extra = _mark_labels(header, top, [(lo, hi, r) for (lo, hi), r in zip(bands, rows)],
                                         texts, marks)
+            if (notes or extra) and GRID_WITH_MARKS_AS_IMAGE:
+                # tabel progress dengan titik penanda (mis. TW I-IV) lebih terbaca sebagai gambar utuh;
+                # legenda tepat di bawah tabel ("Progressing on target", ...) ikut dalam gambar
+                bottom = max(hi for _, hi in bands)
+                legend = [t for t in texts if id(t) not in used and t not in header and bottom - 0.01 <= t.y <= bottom + 0.04
+                          and left <= t.x + t.w / 2 <= right]
+                if legend:
+                    bottom = max([bottom] + [t.b for t in legend])
+                    row_used |= {id(t) for t in legend}
+                grids.append(Box("picture", left, header[0].y, right - left, bottom - header[0].y,
+                                 name="grid-image"))
+                used |= {id(h) for h in header} | row_used
+                continue
 
             def cell(ri, ci, boxes):
                 text = _cell_text(boxes, notes)
@@ -489,6 +566,9 @@ DIAGRAM_MIN_GFX = 3
 DIAGRAM_SHORT_CHARS = 90
 DIAGRAM_MARGIN = 0.008
 BACKGROUND_MIN_AREA = 0.15     # shape sebesar ini = latar belakang, bukan bagian diagram
+DIAGRAM_FLOW_GROW = 0.03       # diagram alur: elemen sejauh ini dari area ikut masuk diagram
+DIAGRAM_MIN_FLOW = 5          # >= 2 panah/shape + kotak berwarna berisi teks, total minimal sebanyak ini
+DIAGRAM_MAX_CHART_SHARE = 0.4 # area kandidat diagram yang > 40% isinya grafik besar bukan diagram
 
 
 def detect_diagrams(boxes: list, title: Optional[Box]) -> tuple:
@@ -500,7 +580,12 @@ def detect_diagrams(boxes: list, title: Optional[Box]) -> tuple:
 
     gfx = [b for b in boxes if (b.kind == "shape" and not is_background(b))
            or (b.kind == "picture" and b.w < ICON_MAX_W)]
-    shorts = [b for b in boxes if b.kind == "text" and b is not title and len(b.text) <= DIAGRAM_SHORT_CHARS]
+    charts = [b for b in boxes if b.kind == "picture" and b.w >= ICON_MAX_W]
+    # caption grafik (label tepat di atas grafik besar dan kurang lebih selebar grafiknya) milik grafiknya,
+    # bukan bagian diagram. Bilah yang jauh lebih sempit dari gambar di bawahnya = lapisan diagram.
+    shorts = [b for b in boxes if b.kind == "text" and b is not title and len(b.text) <= DIAGRAM_SHORT_CHARS
+              and not (_is_label(b) and any(_h_overlap(b, c) >= 0.6 and -0.03 <= c.y - b.b <= 0.06
+                                            and abs(b.w - c.w) <= 0.25 * c.w for c in charts))]
     cands = gfx + shorts
     parent = list(range(len(cands)))
 
@@ -525,16 +610,46 @@ def detect_diagrams(boxes: list, title: Optional[Box]) -> tuple:
         n_text = sum(1 for b in members if b.kind == "text")
         # garis tipis hanya menyambung, tidak dihitung sebagai elemen grafis
         n_gfx = sum(1 for b in members if b.kind != "text" and min(b.w, b.h) >= 0.01)
-        if n_text < DIAGRAM_MIN_TEXTS or n_gfx < DIAGRAM_MIN_GFX:
+        # diagram alur: node berupa kotak berwarna berisi teks, dihubungkan panah
+        n_nodes = sum(1 for b in members if b.kind == "text" and b.filled)
+        is_flow = not n_gfx >= DIAGRAM_MIN_GFX
+        if n_text < DIAGRAM_MIN_TEXTS or not (
+                n_gfx >= DIAGRAM_MIN_GFX or (n_gfx >= 2 and n_gfx + n_nodes >= DIAGRAM_MIN_FLOW)):
             continue
+        if is_flow:
+            # diagram alur: jarak antar node (dihubungkan panah) bisa lebih lebar dari margin sambung,
+            # jadi area diperluas menelan elemen di sekitarnya, termasuk kotak kesimpulan berwarna
+            grow = [b for b in boxes if b not in members and b is not title and (
+                b in gfx or b in shorts or (b.kind == "text" and b.filled and len(b.text) <= 250))]
+            g = DIAGRAM_FLOW_GROW
+            changed = True
+            while changed:
+                changed = False
+                x0, y0 = min(b.x for b in members), min(b.y for b in members)
+                x1, y1 = max(b.r for b in members), max(b.b for b in members)
+                for b in list(grow):
+                    if b.x < x1 + g and x0 - g < b.r and b.y < y1 + g and y0 - g < b.b:
+                        members.append(b)
+                        grow.remove(b)
+                        changed = True
         # area dibatasi ke dalam slide dan tidak menutupi judul
         x, y = max(min(b.x for b in members), 0.0), max(min(b.y for b in members), 0.0)
         r, btm = min(max(b.r for b in members), 1.0), min(max(b.b for b in members), 1.0)
         if title is not None and title.b > y and _h_overlap(title, Box("", x, y, r - x, btm - y)) > 0:
             y = title.b
+        # subjudul/keynote panjang tepat di bawah judul slide tetap teks: area dimulai di bawahnya
+        if title is not None:
+            for t in long_texts:
+                if abs(t.y - title.b) < 0.03 and t.w > 0.6 and t.y - y < 0.03 and t.b < btm:
+                    y = max(y, t.b)
         if r <= x or btm <= y or (r - x) * (btm - y) < 0.01:
             continue
         unit = Box("picture", x, y, r - x, btm - y, name="diagram")
+        # area yang sebagian besar berisi grafik besar = deretan grafik + caption, bukan diagram;
+        # grafik-grafik itu ditangani sebagai gambar biasa dengan caption masing-masing
+        charts = sum(b.w * b.h for b in boxes if b.kind == "picture" and b.w >= ICON_MAX_W and _inside(b, unit, 0.01))
+        if charts > DIAGRAM_MAX_CHART_SHARE * unit.w * unit.h:
+            continue
         units.append(unit)
         # semua yang berada di dalam area diagram ikut ter-crop; teks panjang tetap ditulis sebagai teks
         used |= {id(b) for b in boxes if b is not title and _inside(b, unit, 0.005)
@@ -562,12 +677,19 @@ def analyse(slide, W: int, H: int) -> dict:
     # grid yang berada di dalam area diagram sudah ikut ter-crop di gambar diagram -> jangan dobel
     grids = [g for g in grids if not any(_inside(g, d, 0.02) for d in diagrams)]
 
-    pics = merge_pictures([b for b in boxes if b.kind == "picture" and b.w >= ICON_MAX_W] + diagrams)
-    tables = sorted([b for b in boxes if b.kind == "table"] + grids, key=lambda b: (b.y, b.x))
+    # tabel PPT yang sangat lebar tidak terbaca di halaman Word -> diambil sebagai gambar dari render
+    wide_tables = [b for b in boxes if b.kind == "table" and max((len(r) for r in b.rows), default=0) > TABLE_MAX_COLS]
+    pics = merge_pictures([b for b in boxes if b.kind == "picture" and b.w >= ICON_MAX_W] + diagrams +
+                          [Box("picture", t.x, t.y, t.w, t.h, name=t.name, rows=t.rows) for t in wide_tables] +
+                          [g for g in grids if g.kind == "picture"])
+    tables = sorted([b for b in boxes if b.kind == "table" and b not in wide_tables] +
+                    [g for g in grids if g.kind == "table"], key=lambda b: (b.y, b.x))
     texts = [b for b in boxes if b.kind == "text" and b is not title]
 
     # teks yang (sebagian besar) menimpa area gambar sudah ikut ter-crop dari render
-    texts = [t for t in texts if not any(_inside(t, p) or _inter(t, p) > 0.5 * t.w * t.h for p in pics)]
+    # (gambar tabel progress sudah memakai teks miliknya sendiri; teks lain yang menempel di tepinya tetap teks)
+    texts = [t for t in texts if not any(_inside(t, p) or _inter(t, p) > 0.5 * t.w * t.h
+                                         for p in pics if p.name != "grid-image")]
     # stiker: teks kecil pendek yang menempel di atas elemen lain (catatan kaki dikecualikan)
     def sticker(t):
         return (t.w < STICKER_MAX_W and len(t.text) < 40 and t.y < NOTE_MIN_Y
@@ -588,17 +710,66 @@ def analyse(slide, W: int, H: int) -> dict:
 
     labels = [t for t in texts if _is_label(t)]
 
-    # caption: label tepat di atas gambar (konvensi deck), kalau tidak ada -> tepat di bawah
-    figures, used = [], set()
+    def is_above(l, p):
+        return _h_overlap(l, p) >= 0.6 and -0.03 <= p.y - l.b <= 0.06
+
+    # satu caption yang menaungi beberapa grafik berdampingan -> grafik-grafik itu satu gambar dengan
+    # caption tersebut; judul kecil tiap grafik (label di antara caption dan grafik) ikut ter-crop
+    caps, used = {}, set()
+    for l in labels:
+        if id(l) in used:
+            continue
+        under = [p for p in pics if is_above(l, p) and p.x >= l.x - 0.02 and p.r <= l.r + 0.02]
+        if len(under) >= 2 and max(p.y for p in under) - min(p.y for p in under) < 0.05:
+            x, y = min(p.x for p in under), min(p.y for p in under)
+            r, btm = max(p.r for p in under), max(p.b for p in under)
+            inner = [t for t in labels if t is not l and id(t) not in used and t.y >= l.b - 0.005
+                     and t.b <= y + 0.01 and t.x >= x - 0.01 and t.r <= r + 0.01]
+            if inner:
+                y = min([y] + [t.y for t in inner])
+                texts = [t for t in texts if t not in inner]
+                used |= {id(t) for t in inner}
+            unit = Box("picture", x, y, r - x, btm - y, name=under[0].name,
+                       images=sum((p.images for p in under), []))
+            pics = [p for p in pics if p not in under] + [unit]
+            caps[id(unit)] = l
+            used.add(id(l))
+
+    # caption: label tepat di atas gambar (konvensi deck) diberikan dulu ke semua gambar; baru setelah itu
+    # gambar yang belum punya caption boleh memakai label tepat di bawahnya, asalkan label itu bukan
+    # caption atas gambar lain
     for p in sorted(pics, key=lambda p: (p.y, p.x)):
-        free = [l for l in labels if id(l) not in used and _h_overlap(l, p) >= 0.6]
-        above = [l for l in free if -0.03 <= p.y - l.b <= 0.06]
-        below = [l for l in free if -0.03 <= l.y - p.b <= 0.04]
-        cap = (min(above, key=lambda l: abs(p.y - l.b), default=None)
-               or min(below, key=lambda l: abs(l.y - p.b), default=None))
+        if id(p) in caps:
+            continue
+        above = [l for l in labels if id(l) not in used and is_above(l, p)]
+        cap = min(above, key=lambda l: abs(p.y - l.b), default=None)
         if cap:
+            caps[id(p)] = cap
             used.add(id(cap))
-        figures.append((p, cap))
+    for p in sorted(pics, key=lambda p: (p.y, p.x)):
+        if id(p) in caps:
+            continue
+        below = [l for l in labels if id(l) not in used and _h_overlap(l, p) >= 0.6
+                 and -0.03 <= l.y - p.b <= 0.04 and not any(is_above(l, o) for o in pics if o is not p)]
+        cap = min(below, key=lambda l: abs(l.y - p.b), default=None)
+        if cap:
+            caps[id(p)] = cap
+            used.add(id(cap))
+    figures = [(p, caps.get(id(p))) for p in sorted(pics, key=lambda p: (p.y, p.x))]
+
+    # panel grafik: teks pendek di dalam lebar caption, di antara caption dan grafik (judul grafik),
+    # ikut ter-crop bersama grafiknya
+    for p, cap in figures:
+        if cap is None or cap.b > p.y + 0.01:
+            continue
+        inner = [t for t in texts if id(t) not in used and t is not cap and len(t.text) <= 120
+                 and t.x >= cap.x - 0.01 and t.r <= cap.r + 0.01
+                 and t.y >= cap.b - 0.005 and t.b <= p.y + 0.02]
+        if inner:
+            top, bottom = min([p.y] + [t.y for t in inner]), max([p.b] + [t.b for t in inner])
+            left, right = min([p.x] + [t.x for t in inner]), max([p.r] + [t.r for t in inner])
+            p.x, p.y, p.w, p.h = left, top, right - left, bottom - top
+            used |= {id(t) for t in inner}
 
     rest = [t for t in texts if id(t) not in used]
     notes = sorted([t for t in rest if t.y >= NOTE_MIN_Y], key=lambda b: (b.y, b.x))
@@ -617,12 +788,31 @@ def analyse(slide, W: int, H: int) -> dict:
         bodies = [b for b in bodies if b not in tall]
         subheads = [s for s in subheads if s not in heads]
 
+    # panel berdampingan (mis. RPLN | PLM dengan sub-bagian yang sama): teks dibaca per panel, kiri ke
+    # kanan, supaya isi kedua panel tidak selang-seling. Panel = shape latar yang berisi >= 3 teks.
+    panels = []
+    frames = [s for s in boxes if s.kind == "shape" and PANEL_MIN_AREA <= s.w * s.h <= 0.5]
+    inside_of = {id(f): [t for t in subheads + bodies + notes if _inside(t, f, 0.01)] for f in frames}
+    frames = [f for f in frames if len(inside_of[id(f)]) >= 3]
+    frames = [f for f in frames if not any(o is not f and _inside(f, o, 0.005) for o in frames)]  # terluar
+    row = sorted(frames, key=lambda f: f.x)
+    if len(row) >= 2 and all(a.r <= b.x + 0.01 and min(a.b, b.b) - max(a.y, b.y) > 0.5 * min(a.h, b.h)
+                             for a, b in zip(row, row[1:])):
+        for f in row:
+            head = next((s for s in subheads if _h_overlap(s, f) >= 0.6 and f.y - 0.05 <= s.y <= f.y + 0.03
+                         and s not in inside_of[id(f)]), None)
+            panels.append((head, sorted(inside_of[id(f)], key=lambda t: (round(t.y, 3), t.x))))
+        taken = {id(t) for _, ts in panels for t in ts} | {id(h) for h, _ in panels if h}
+        subheads = [s for s in subheads if id(s) not in taken]
+        bodies = [b for b in bodies if id(b) not in taken]
+        notes = [n for n in notes if id(n) not in taken]
+
     # figure: gambar kecil (2 kolom) dulu per kolom atas->bawah, lalu gambar lebar (colspan)
     figures.sort(key=lambda f: (f[0].w >= WIDE_MIN_W, round(f[0].x, 1), f[0].y))
 
     return dict(title=title,
                 subheads=sorted(subheads, key=lambda b: (b.y, b.x)),
-                columns=columns,
+                columns=columns, panels=panels,
                 bodies=sorted(bodies, key=lambda b: (round(b.y, 2), b.x)),
                 figures=figures, tables=tables, notes=notes)
 
@@ -634,9 +824,9 @@ def _body_blocks(box: Box, h3_labels: bool) -> list:
         if h3_labels and t.isupper() and len(t) < 40 and not p.bullet:
             out.append(Block("heading", 3, p.runs))   # "KESIMPULAN" / "ARAHAN" di dalam kolom
         elif p.bullet:
-            out.append(Block("bullet", p.level, p.runs, numbered=p.numbered))
+            out.append(Block("bullet", p.level, p.runs, numbered=p.numbered, num_fmt=p.num_fmt))
         else:
-            out.append(Block("para", 0, p.runs))
+            out.append(Block("para", p.level, p.runs))   # level PPT disimpan untuk penomoran manual
     return out
 
 
@@ -652,6 +842,15 @@ def slide_blocks(info: dict, crop: Callable[[Box], Path]) -> list:
         blocks += _body_blocks(col, h3_labels=True)
     for b in info["bodies"]:
         blocks += _body_blocks(b, h3_labels=False)
+    for head, items in info.get("panels", []):
+        if head:
+            blocks.append(Block("heading", 2, head.runs))
+        for t in items:
+            # sub-judul di dalam panel: label kapital, atau bilah berwarna pendek satu baris ("Terkait Ketentuan")
+            if _is_label(t) or (t.filled and len(t.text) <= 40 and len(t.paras) == 1):
+                blocks.append(Block("heading", 3, t.runs))
+            else:
+                blocks += _body_blocks(t, h3_labels=False)
     # gambar dan tabel diurutkan menurut posisi atasnya di slide (mis. legenda di bawah tabel tetap di bawah)
     placed = []
     if info["figures"]:
@@ -660,6 +859,9 @@ def slide_blocks(info: dict, crop: Callable[[Box], Path]) -> list:
             img = crop(pic)
             if img:
                 rows.append({"img": img, "wide": pic.w >= WIDE_MIN_W, "caption": cap.runs if cap else []})
+            elif pic.rows:
+                # tabel lebar tanpa render (PowerPoint tidak tersedia): tetap ditulis sebagai tabel
+                placed.append((pic.y, Block("table", rows=pic.rows)))
         if rows:
             placed.append((min(p.y for p, _ in info["figures"]), Block("figures", rows=rows)))
     for t in info["tables"]:
@@ -668,7 +870,40 @@ def slide_blocks(info: dict, crop: Callable[[Box], Path]) -> list:
     for n in info["notes"]:
         for p in n.paras:
             blocks.append(Block("note", runs=p.runs))
-    return blocks
+    return _continue_manual_numbers(blocks)
+
+
+# --------------------------------------------------------------------------- tanda "perlu dicek"
+CHECK_IMAGE_SHARE = 0.4     # >= 40% area slide masuk sebagai diagram/tabel-gambar -> teksnya tidak bisa diedit
+CHECK_SHORT_PARAS = 8       # sebanyak ini potongan teks pendek di luar list -> kemungkinan sisa diagram
+
+
+def slide_flags(info: dict, blocks: list) -> list:
+    """Tanda otomatis untuk slide yang hasilnya sebaiknya dicek manual. Tidak mengubah hasil konversi.
+    Mengembalikan [{"code", "msg"}]."""
+    flags = []
+    units = [p for p, _ in info["figures"] if p.name in ("diagram", "grid-image") or p.rows]
+    share = sum(min(p.w, 1) * min(p.h, 1) for p in units)
+    if share >= CHECK_IMAGE_SHARE:
+        flags.append({"code": "image", "msg": "Sebagian besar isi slide dimasukkan sebagai gambar (diagram/tabel), "
+                                               "jadi teks di dalamnya tidak bisa diedit di CKEditor."})
+    if any(p.name == "grid-image" or p.rows for p in units):
+        flags.append({"code": "table_image", "msg": "Tabel dimasukkan sebagai gambar karena terlalu lebar atau "
+                                                     "berisi penanda progres. Angka di dalamnya tidak bisa diedit."})
+    short = [b for b in blocks if b.type == "para" and len("".join(r[0] for r in b.runs).strip()) < 40]
+    if len(short) >= CHECK_SHORT_PARAS:
+        flags.append({"code": "fragments", "msg": f"Ada {len(short)} potongan teks pendek di luar daftar; "
+                                                   "kemungkinan bagian dari diagram. Cek urutan dan kelengkapannya."})
+    figs = [r for b in blocks if b.type == "figures" for r in b.rows]
+    if len(figs) >= 2 and any(not r["caption"] for r in figs):
+        n = sum(1 for r in figs if not r["caption"])
+        flags.append({"code": "caption", "msg": f"{n} dari {len(figs)} gambar tidak punya judul/caption. "
+                                                 "Cek apakah judulnya tertukar atau ikut masuk ke gambar."})
+    content = [b for b in blocks if not (b.type == "heading" and b.level == 1)]
+    if not content:
+        flags.append({"code": "empty", "msg": "Slide hanya menghasilkan judul (mungkin slide pembatas). "
+                                               "Pastikan memang tidak ada isi yang terlewat."})
+    return flags
 
 
 # --------------------------------------------------------------------------- 3. render + crop
@@ -790,6 +1025,30 @@ class DocxWriter:
                 found.setdefault(kind, an.get(qn("w:abstractNumId")))
         return found
 
+    def _abstract_for(self, fmt: str) -> Optional[str]:
+        """abstractNum untuk format nomor tertentu. Template cuma punya decimal & bullet, jadi format
+        lain (lowerLetter, lowerRoman, ...) dibuat dengan menyalin abstractNum decimal."""
+        if fmt in self._numbering:
+            return self._numbering[fmt]
+        base = self._numbering.get("decimal")
+        if base is None:
+            return None
+        numbering = self.doc.part.numbering_part.element
+        src = next(a for a in numbering.findall(qn("w:abstractNum")) if a.get(qn("w:abstractNumId")) == base)
+        clone = copy.deepcopy(src)
+        new_id = str(max(int(a.get(qn("w:abstractNumId"))) for a in numbering.findall(qn("w:abstractNum"))) + 1)
+        clone.set(qn("w:abstractNumId"), new_id)
+        for tag in ("w:nsid", "w:tmpl"):
+            for e in clone.findall(qn(tag)):
+                clone.remove(e)
+        for lvl in clone.findall(qn("w:lvl")):
+            nf = lvl.find(qn("w:numFmt"))
+            if nf is not None:
+                nf.set(qn("w:val"), fmt)
+        numbering.findall(qn("w:abstractNum"))[-1].addnext(clone)   # abstractNum harus sebelum w:num
+        self._numbering[fmt] = new_id
+        return new_id
+
     def _new_num(self, abstract_id: str, level: int) -> str:
         """w:num baru yang mulai dari 1 -> tiap list di dokumen punya penomoran sendiri."""
         numbering = self.doc.part.numbering_part.element
@@ -833,14 +1092,15 @@ class DocxWriter:
     def _bullet(self, bl):
         p = self.doc.add_paragraph()
         level = min(bl.level, 8)
-        abstract = self._numbering.get("decimal" if bl.numbered else "bullet")
+        kind = bl.num_fmt if bl.numbered else "bullet"
+        abstract = self._abstract_for(kind) if bl.numbered else self._numbering.get("bullet")
         if abstract is None:
             p.style = "List Number" if bl.numbered else "List Bullet"
         else:
             # sub-list di bawah item ini selesai saat kembali ke level ini
             for key in [k for k in self._list if k[1] > level]:
                 del self._list[key]
-            key = (bl.numbered, level)
+            key = (kind, level)
             if key not in self._list:
                 self._list[key] = self._new_num(abstract, level)
             numPr = OxmlElement("w:numPr")
@@ -945,21 +1205,26 @@ def _img_src(path: Path, embed: bool, rel_to: Optional[Path]) -> str:
     return path.relative_to(rel_to).as_posix() if rel_to else path.as_posix()
 
 
+_HTML_OL_TYPE = {"lowerLetter": "a", "upperLetter": "A", "lowerRoman": "i", "upperRoman": "I"}
+
+
 def blocks_to_html(slides: list, embed_images: bool = True, rel_to: Optional[Path] = None,
                    img_url: Optional[Callable[[Path], str]] = None) -> str:
     """slides: [[Block]] -> fragmen HTML yang bersih untuk CKEditor (tanpa class/CSS khusus).
     img_url: kalau diisi, menentukan src gambar (mis. URL server) dan menggantikan embed/rel_to."""
     out = []
     for blocks in slides:
-        list_stack = []           # tag list yang terbuka per level: "ul" / "ol"
+        list_stack = []           # tag pembuka list per level: "ul" / "ol" / 'ol type="a"' ...
 
         def close(level=-1):
             while len(list_stack) > level + 1:
-                out.append(f"</li></{list_stack.pop()}>")
+                out.append(f"</li></{list_stack.pop().split()[0]}>")
 
         for bl in blocks:
             if bl.type == "bullet":
-                lvl, tag = min(bl.level, 5), ("ol" if bl.numbered else "ul")
+                lvl = min(bl.level, 5)
+                tag = "ul" if not bl.numbered else (
+                    f'ol type="{_HTML_OL_TYPE[bl.num_fmt]}"' if bl.num_fmt in _HTML_OL_TYPE else "ol")
                 if len(list_stack) > lvl + 1:
                     close(lvl)
                 if len(list_stack) == lvl + 1 and list_stack[lvl] != tag:
