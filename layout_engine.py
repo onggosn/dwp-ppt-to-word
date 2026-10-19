@@ -89,6 +89,7 @@ class Box:
     is_title: bool = False
     is_placeholder_body: bool = False
     filled: bool = False      # kotak teks berwarna (node diagram / bilah), bukan text box polos
+    fill_cells: int = 0       # tabel: sel kosong berwarna (bar Gantt, status warna) -> maknanya ada di warna
 
     @property
     def r(self) -> float:
@@ -255,6 +256,21 @@ def _has_fill(s) -> bool:
     return ref is not None and ref.get("idx", "0") != "0"
 
 
+def _empty_filled_cells(table) -> int:
+    """Jumlah sel tanpa teks yang diberi warna (bukan putih). Sel gabungan tidak dihitung."""
+    n = 0
+    for row in table.rows:
+        for c in row.cells:
+            if c.is_spanned or c.text.strip():
+                continue
+            tcpr = c._tc.tcPr
+            fill = tcpr.find(qn("a:solidFill")) if tcpr is not None else None
+            clr = fill[0] if fill is not None and len(fill) else None
+            if clr is not None and (clr.get("val") or "").upper() not in ("FFFFFF", "BG1", "LT1"):
+                n += 1
+    return n
+
+
 def collect(shapes, W: int, H: int, tf=None) -> list:
     """Semua shape (group diratakan) dalam koordinat fraksi slide."""
     tf = tf or (lambda x, y, w, h: (x, y, w, h))
@@ -290,6 +306,7 @@ def collect(shapes, W: int, H: int, tf=None) -> list:
             box.kind = "table"
             box.rows = [[_clean(c.text, vt="\n").strip() for c in r.cells] for r in s.table.rows]
             box.col_widths = [int(c.width or 0) for c in s.table.columns]
+            box.fill_cells = _empty_filled_cells(s.table)
         elif getattr(s, "has_chart", False) and s.has_chart:
             box.kind = "picture"      # chart native: diambil dari render
         elif s.has_text_frame:
@@ -657,8 +674,11 @@ def detect_diagrams(boxes: list, title: Optional[Box]) -> tuple:
     return units, used
 
 
-def analyse(slide, W: int, H: int) -> dict:
-    boxes = [b for b in collect(slide.shapes, W, H) if _on_slide(b)]
+def analyse(slide, W: int, H: int, boxes: Optional[list] = None) -> dict:
+    """boxes (opsional): hasil collect() yang sudah difilter _on_slide. Diisi oleh report_engine supaya
+    hasil analisa (objek Box yang sama) bisa dipetakan kembali ke id elemennya."""
+    if boxes is None:
+        boxes = [b for b in collect(slide.shapes, W, H) if _on_slide(b)]
     title = _pick_title(boxes)
     if title:
         title.is_title = True

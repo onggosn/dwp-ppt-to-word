@@ -532,6 +532,7 @@
                         <div class="row">
                             <div><label for="engine">Conversion engine</label>
                                 <select id="engine">
+                                    <option value="report">Report format (rules + LLM for complex slides)</option>
                                     <option value="layout">Layout engine (rule-based, no LLM needed)</option>
                                     <option value="docling">Docling + LLM layout (legacy)</option>
                                 </select>
@@ -605,10 +606,12 @@
         file.onchange = picked;
         function picked() { const f = file.files[0]; if (!f) return; $('fname').textContent = f.name; ready() }
         // Layout engine: hanya untuk .pptx; HTML referensi hanya dibutuhkan oleh alur Docling + LLM
-        function layoutMode() { const f = file.files[0]; return $('engine').value === 'layout' && !(f && /\.pdf$/i.test(f.name)) }
+        // Report engine: sama seperti layout engine (PPTX saja, tanpa HTML referensi); LLM = rencana slide sulit
+        function layoutMode() { const f = file.files[0]; return ['layout', 'report'].includes($('engine').value) && !(f && /\.pdf$/i.test(f.name)) }
         function ready() {
             const f = file.files[0], r = $('ref').files[0], layout = layoutMode();
-            $('llmlabel').textContent = layout ? 'Use LLM to tidy the text (optional)' : 'Use LLM to tidy the layout';
+            $('llmlabel').textContent = !layout ? 'Use LLM to tidy the layout'
+                : $('engine').value === 'report' ? 'Use LLM for complex slides (recommended)' : 'Use LLM to tidy the text (optional)';
             $('llmopts').hidden = !$('usellm').checked;
             $('refrow').hidden = layout;
             $('hiddenopt').hidden = !layout;

@@ -13,6 +13,7 @@ from flask import Flask, jsonify, render_template, request, send_file
 import converter as c  # your original code
 import ckeditor_flow  # PPT -> CKEditor (seamless editing)
 import layout_engine  # PPTX -> DOCX/HTML dari geometri slide (tanpa LLM)
+import report_engine  # PPTX -> DOCX format laporan (test3.docx): aturan + LLM untuk slide sulit
 import review  # halaman review hasil layout engine per slide (/review)
 
 app = Flask(__name__)
@@ -81,6 +82,28 @@ def run_layout_job(job_id, pptx: Path, provider, model, use_llm, include_hidden=
         job.update(status="error", error=str(e))
 
 
+def run_report_job(job_id, pptx: Path, provider, model, use_llm, include_hidden=False):
+    """Report engine: render -> rencana aturan -> [LLM untuk slide dense/bertanda] -> DOCX format laporan."""
+    job = JOBS[job_id]
+    # batas progress (lihat report_engine.convert_report) -> indeks langkah di UI
+    bounds = [0.3] + ([0.35, 0.88] if use_llm else [0.88]) + [1.01]
+
+    def on_progress(fraction, _message):
+        job["step"] = next(i for i, b in enumerate(bounds) if fraction < b)
+
+    try:
+        job["status"] = "running"
+        docx_path = WORK / job_id / f"{pptx.stem}.docx"
+        stats = report_engine.convert_report(
+            pptx, docx_path, planner="auto" if use_llm else "rules", provider=provider, model=model,
+            work_dir=WORK / job_id / "build", progress=on_progress, include_hidden=include_hidden,
+        )
+        job.update(status="done", step=len(job["steps"]), file=str(docx_path), name=docx_path.name, stats=stats)
+    except Exception as e:
+        traceback.print_exc()
+        job.update(status="error", error=str(e))
+
+
 @app.get("/")
 def index():
     return render_template("index.html")
@@ -109,7 +132,19 @@ def convert():
     provider = request.form.get("provider", "gemini")
     model = request.form.get("model") or "gemini-3.8-flash"
 
-    # layout engine hanya untuk PPTX; PDF tetap lewat Docling
+    # layout & report engine hanya untuk PPTX; PDF tetap lewat Docling
+    if request.form.get("engine") == "report" and not is_pdf:
+        steps = ["Render slides with PowerPoint", "Plan slide layout with rules"]
+        if use_llm:
+            steps.append("Re-plan complex slides with LLM")
+        steps.append("Write Word document")
+        JOBS[job_id] = dict(id=job_id, status="queued", step=0, source=f.filename, steps=steps,
+                            llm_step=-1, llm_chars=0, engine="report")
+        include_hidden = request.form.get("include_hidden", "false") == "true"
+        threading.Thread(target=run_report_job, args=(job_id, pptx, provider, model, use_llm, include_hidden),
+                         daemon=True).start()
+        return jsonify(id=job_id)
+
     if request.form.get("engine", "layout") == "layout" and not is_pdf:
         steps = ["Render slides with PowerPoint", "Analyse slide layout (no LLM)"]
         if use_llm:
