@@ -1,0 +1,6 @@
+path: C:/Users/mp44l/Repositories/dwp-ppt-word/train/dataset_ppt
+train: images/train
+val: images/val
+
+nc: 5
+names: ['Title', 'Subtitle', 'Plain Text', 'Picture', 'Caption Picture']

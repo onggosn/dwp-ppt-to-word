@@ -4,4 +4,19 @@
 /__pycache__
 /.venv
 
-/work
+# work/ dibuka hanya untuk folder label dataset; sisanya tetap diabaikan
+/work/*
+!/work/dataset_prep/
+!/work/dataset_prep2/
+/work/dataset_prep*/images/
+/work/dataset_prep*/annotated/
+/work/dataset_prep*/**/*.png
+/work/dataset_prep*/**/*.jpg
+
+# model, gambar, dan output training tidak ikut di git
+/train/*.pt
+/train/**/*.png
+/train/**/*.cache
+/train/dataset_ppt/images/
+/runs/
+/weights/
