@@ -1,0 +1,85 @@
+<customUI xmlns="http://schemas.microsoft.com/office/2006/01/customui">
+  <ribbon>
+    <tabs>
+      <tab id="dwpPlugin" label="DWP Plugin">
+
+        <!-- Group: Textbox dan Keynote -->
+        <group id="groupIdentifier" label="Text">
+          <button id="btnTitle" label="Title" size="large" onAction="RunAction"
+                  imageMso="ControlTitle" 
+                  screentip="Identify Title"
+                  supertip="Memberikan identifier #title, sehingga akan menjadi Title pada aplikasi DWP" />
+          <button id="btnKeynote" label="Keynote" size="large" onAction="RunAction"
+                  imageMso="GroupPlaceholdersNotesMaster" 
+                  screentip="Identify Keynote"
+                  supertip="Memberikan identifier #keynotes{order_number}, sehingga akan menjadi Keynotes pada aplikasi DWP" />
+        </group>
+
+        <!-- Group: Gambar -->
+        <group id="groupPictureNormal" label="Picture/Caption">
+          <button id="btnTextbox" label="Textbox" size="large" onAction="RunAction"
+                  imageMso="TextBoxInsertVertical" 
+                  screentip="Identifier #textbox"
+                  supertip="Memberikan identifier #textbox{notfull}{order_number}, sehingga akan menjadi caption gambar (disebelah kanan) pada aplikasi DWP" />
+          <button id="btnPicture" label="Picture" size="large" onAction="RunAction"
+                  imageMso="WordPicture" 
+                  screentip="Identifier #picture"
+                  supertip="Melakukan duplikasi object menjadi gambar lalu memberikan identifier #picture{notfull}{order_number}, sehingga akan menjadi gambar (disebelah kiri) pada aplikasi DWP" />
+          <button id="btnTextboxFull" label="Textbox Full" size="large" onAction="RunAction"
+                  imageMso="TextBoxInsert" 
+                  screentip="Identifier #textboxfull"
+                  supertip="Memberikan identifier #textbox{full}{order_number}, sehingga akan menjadi caption gambar (dibagian bawah) pada aplikasi DWP" />
+          <button id="btnPictureFull" label="Picture Full" size="large" onAction="RunAction"
+                  imageMso="ObjectPictureFill" 
+                  screentip="Identifier #picturefull"
+                  supertip="Melakukan duplikasi object menjadi gambar lalu memberikan identifier #picture{full}{order_number}, sehingga akan menjadi gambar penuh (dari kiri ke kanan form)" />
+        </group>
+
+        <!-- Group: Hapus Identifier -->
+        <group id="groupRemove" label="Remove/Ignore">
+          <button id="btnRemoveIdentifier" label="Remove Identifier" size="large" onAction="RunAction"
+                  imageMso="PageNumbersRemove" 
+                  screentip="Remove Identifier"
+                  supertip="Menghapus identifier # sehingga tidak akan termapping pada aplikasi DWP" />
+          <button id="btnIgnore" label="Ignore" size="large" onAction="RunAction"
+                  imageMso="SlideHide" 
+                  screentip="Ignore slide"
+                  supertip="Ignore slide agar tidak termapping pada aplikasi DWP" />
+        </group>
+            
+        <!-- Group: Penyusun -->
+        <group id="groupPenyusun" label="Penyusun">
+            <button id="btnViewPenyusun" label="View" size="large" onAction="RunAction"
+                    imageMso="ViewDraftView"
+                    screentip="Lihat NIP penyusun"
+                    supertip="Melihat NIP penyusun pada notes Powerpoint" />
+            <button id="btnAddPenyusun" label="Add" size="large" onAction="RunAction"
+                    imageMso="AddOrRemoveAttendees"
+                    screentip="Tambah NIP Penyusun"
+                    supertip="Menambahkan NIP penyusun pada notes Powerpoint sehingga akan tercatat pada aplikasi DWP" />
+            <button id="btnRemovePenyusun" label="Remove" size="large" onAction="RunAction"
+                    imageMso="AddOrRemoveAttendees"
+                    screentip="Hapus NIP Penyusun"
+                    supertip="Menghapus NIP penyusun pada notes Powerpoint" />
+        </group>
+        <group id="groupReport" label="Laporan">
+            <button id="btnConvertWord" label="Convert to Word" size="large" onAction="RunAction"
+                    imageMso="FileSaveAsWordDocx"
+                    screentip="Konversi ke Word"
+                    supertip="Mengonversi presentasi aktif menjadi dokumen Word berformat laporan (tanpa LLM). Hasil disimpan sebagai &lt;nama file&gt;_laporan.docx di folder yang sama lalu dibuka di Word." />
+        </group>
+        <group id="groupExperimental" label="Experimental">
+            <button id="btnAITagging" label="AI Tagging" size="large" onAction="RunAction"
+                    imageMso="UpgradePresentation"
+                    screentip="Tagging menyeluruh dengan bantuan AI"
+                    supertip="Tagging menyeluruh dengan bantuan AI lalu save ke file yang berbeda agar tidak merusak file asli" />
+        </group>
+        <group id="groupAbout" label="About">
+            <button id="btnAbout" label="About" size="large" onAction="RunAction"
+                    imageMso="TraceError"
+                    screentip="About"/>
+        </group>
+      </tab>
+    </tabs>
+  </ribbon>
+</customUI>

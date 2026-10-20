@@ -20,3 +20,9 @@
 /train/dataset_ppt/images/
 /runs/
 /weights/
+
+# add-in build (addin/build.py)
+/.venv-addin/
+/dist/
+/build/
+__pycache__/
