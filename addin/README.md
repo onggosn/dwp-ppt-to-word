@@ -67,6 +67,11 @@ then rebuild the exe and run `set_ribbon.py` again. No VBA change is needed.
 - `/` and `/dwp` have an engine selector, with the report format as the default.
 - Report jobs offer DOCX and CKEditor HTML downloads.
 - `/review/<job>` shows each slide's render next to the result, with its slide type, plan source and flags.
+- `/dwp` editor tab (`ckeditor_flow.py`): "Generate PPT" is an upload for the prototype. The uploaded deck
+  is converted straight away with the report engine (rules only, reusing the background render), mapped to
+  the section tree and put into CKEditor. The review step lists the flagged slides; each can be fixed by
+  hand (edit the result in place), re-planned by the LLM with a prompt prefilled from its flags, marked OK,
+  or reverted. Fixes stay in server memory; the DOCX download is the automatic result without them.
 
 **Measurement**:
 
@@ -95,4 +100,5 @@ was tested live against PowerPoint with the built exe. Convert to Word on test3 
   - Small legend labels can appear as stray text (test2 slide 96).
   - Some chart crops show a thin strip of the title bar.
   - The CKEditor HTML embeds images, so it is 63 MB for test2.
-  - The `/dwp` editor tab (`ckeditor_flow.py`) still uses the old layout engine.
+  - `/dwp` review fixes are lost on server restart and are not written back into the DOCX.
+  - "Perbaiki dengan AI" on `/dwp` has only been tested without an API key (error path), not with a real LLM.

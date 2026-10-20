@@ -500,7 +500,7 @@ def load_cached_plan(sp: SlidePlan, cache_dir: Optional[Path]) -> bool:
 
 
 def plan_with_llm(sp: SlidePlan, render_png: Optional[Path], provider: str, model: str,
-                  cache_dir: Optional[Path]) -> None:
+                  cache_dir: Optional[Path], instruction: str = "") -> None:
     if load_cached_plan(sp, cache_dir):
         return
     import llm_planner   # import lambat: SDK provider hanya dimuat kalau LLM dipakai
@@ -514,7 +514,7 @@ def plan_with_llm(sp: SlidePlan, render_png: Optional[Path], provider: str, mode
              "drop": sp.rules_plan["drop"]}
     try:
         plan, errors = llm_planner.plan_slide(element_rows(sp.els), draft, image, provider, model,
-                                              validate=lambda p: validate_plan(p, sp.els))
+                                              validate=lambda p: validate_plan(p, sp.els), instruction=instruction)
     except Exception as e:      # jaringan / kuota / SDK: slide tetap memakai rencana aturan
         plan, errors = None, [f"{type(e).__name__}: {e}"]
     sp.errors = errors
@@ -681,11 +681,15 @@ def convert_report(
     workers: int = 4,
     progress: ProgressFn = _noop,
     only: Optional[set] = None,
+    instruction: str = "",
+    slides_dir=None,
 ) -> dict:
     """planner: rules (tanpa LLM) | cached (rencana LLM tersimpan bila ada, sisanya aturan; tanpa panggilan LLM)
     | auto (LLM hanya untuk slide dense/bertanda) | llm (semua slide isi).
     html_path: kalau diisi, juga menulis HTML mandiri untuk CKEditor dengan format yang sama.
-    only: nomor slide yang dikonversi (untuk mencoba ulang slide tertentu); None = semua."""
+    only: nomor slide yang dikonversi (untuk mencoba ulang slide tertentu); None = semua.
+    instruction: perintah reviewer untuk LLM (bersama only; slide terpilih selalu dikirim ke LLM).
+    slides_dir: folder render slide yang sudah ada (slideN.png dari deck yang sama), dipakai tanpa render ulang."""
     if planner not in PLANNERS:
         raise ValueError(f"planner tidak dikenal: {planner}")
     pptx_path, docx_path = Path(pptx_path), Path(docx_path)
@@ -695,7 +699,10 @@ def convert_report(
     t0 = time.time()
 
     progress(0.02, "Merender slide dengan PowerPoint")
-    rendered = le.render_slides(pptx_path, render_dir) if render else False
+    if slides_dir and (Path(slides_dir) / "slide1.png").exists():
+        render_dir, rendered = Path(slides_dir), True
+    else:
+        rendered = le.render_slides(pptx_path, render_dir) if render else False
     t_render = time.time()
 
     progress(0.3, "Menyusun rencana layout dengan aturan")
@@ -721,11 +728,13 @@ def convert_report(
             sp.kind, sp.rules_plan, sp.flags = "infographic", infographic_plan(sp), []
             sp.plan = sp.rules_plan
         if planner != "rules":
-            sp.key = cache_key(slide, provider, model)
+            sp.key = cache_key(slide, provider, model + ("|" + instruction.strip() if instruction.strip() else ""))
         slides.append(sp)
 
     n_flagged = sum(1 for sp in slides if sp.flags)
-    if planner == "llm":
+    if instruction.strip() and planner != "rules":
+        targets = list(slides)
+    elif planner == "llm":
         targets = [sp for sp in slides if sp.kind not in NO_LLM_KINDS]
     elif planner == "auto":
         targets = [sp for sp in slides if sp.flags]
@@ -742,7 +751,7 @@ def convert_report(
         cache = Path(cache_dir) if cache_dir else None
         with ThreadPoolExecutor(max(1, workers)) as ex:
             futures = {ex.submit(plan_with_llm, sp, render_dir / f"slide{sp.n}.png" if rendered else None,
-                                 provider, model, cache): sp for sp in targets}
+                                 provider, model, cache, instruction): sp for sp in targets}
             for done, f in enumerate(as_completed(futures), 1):
                 f.result()
                 progress(0.35 + 0.5 * done / len(targets),

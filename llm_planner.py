@@ -78,6 +78,12 @@ Draft plan (heuristics, may be wrong):
 {draft}
 """
 
+INSTRUCTION_PROMPT = """
+Instruction from the reviewer for this slide (follow it, the rules above still apply and you still only
+reference element ids):
+{instruction}
+"""
+
 FIX_PROMPT = """
 
 Your previous answer had these problems:
@@ -205,9 +211,12 @@ def call_llm(prompt: str, image: Optional[bytes], provider: str, model: str) -> 
 
 
 def plan_slide(elements: list, draft: dict, image: Optional[bytes], provider: str, model: str,
-               validate: Callable[[dict], list]) -> tuple:
-    """Mengembalikan (rencana atau None kalau tetap tidak sah, kesalahan dari setiap jawaban yang ditolak)."""
+               validate: Callable[[dict], list], instruction: str = "") -> tuple:
+    """Mengembalikan (rencana atau None kalau tetap tidak sah, kesalahan dari setiap jawaban yang ditolak).
+    instruction: perintah reviewer untuk slide ini (halaman /dwp, "Perbaiki dengan AI")."""
     prompt = PROMPT.format(elements=describe(elements), draft=json.dumps(draft, ensure_ascii=False))
+    if instruction.strip():
+        prompt += INSTRUCTION_PROMPT.format(instruction=instruction.strip())
     ask, history = prompt, []
     for _ in range(FIX_ATTEMPTS + 1):
         raw = call_llm(ask, image, provider, model)

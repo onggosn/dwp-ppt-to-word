@@ -277,6 +277,30 @@
         .chk-item .res img { max-width: 100%; height: auto; }
         .chk-item .res table { border-collapse: collapse; width: 100%; } .chk-item .res td { border: 1px solid var(--line); padding: 3px; vertical-align: top; }
         .chk-ok { background: var(--lg); border-radius: 8px; padding: 14px; font-size: 13px; color: var(--muted); }
+        .chk-head .ghost-link { color: var(--blue2); font-size: 12px; font-weight: 600; text-decoration: none; align-self: center; }
+        .chk-item.fixed { border-left-color: var(--ok); }
+        .chk-item .st { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 10px; background: var(--yl); color: #8a6d00; white-space: nowrap; }
+        .chk-item.fixed .st { background: #e3f4ea; color: var(--ok); }
+        .fix-bar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; padding: 10px 14px; border-top: 1px solid var(--line); }
+        .fix-bar .q { font-size: 12px; font-weight: 600; margin-right: 4px; }
+        .fix-bar .sp { flex: 1; }
+        .fix-bar button.on { background: var(--blue2); border-color: var(--blue2); color: #fff; }
+        .fix-panel { padding: 0 14px 14px; }
+        .fix-panel textarea {
+            width: 100%; min-height: 96px; resize: vertical; font: inherit; font-size: 12px; line-height: 1.5;
+            border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: var(--card); color: var(--text);
+        }
+        .fix-panel .hint { font-size: 11px; color: var(--muted); margin: 0 0 6px; }
+        .fix-panel .row2 { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
+        .fix-panel .row2 .err { font-size: 12px; }
+        .chk-item .res[contenteditable="true"] { background: var(--card); outline: 2px solid var(--blue2); max-height: 480px; }
+        .busy { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+        .busy::before { content: ""; width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--blue2); border-top-color: transparent; animation: spin .8s linear infinite; }
+        .ck-slide h1, .chk-item .res h1 { font-size: 15px; margin: 16px 0 6px; }
+        .ck-slide h2, .chk-item .res h2 { font-size: 13px; margin: 12px 0 4px; }
+        .chk-item .res h1:first-child { margin-top: 0; }
+        .gen-drop { max-width: 460px; margin: 0 auto; background: var(--card); }
+        .gen-drop strong { color: var(--blue2); font-weight: 600; margin-bottom: 4px; }
         .ck-tools { display: flex; justify-content: flex-end; margin-bottom: 8px; }
         .ck-body .hl-slide { outline: 3px solid var(--red); outline-offset: 4px; border-radius: 2px; }
         .ck-body img { max-width: 100%; height: auto; }
@@ -475,13 +499,18 @@
                                     <div class="ppt-empty" id="pptEmpty" hidden>
                                         <b>PPT belum ada</b>
                                         <p>Dokumen ini belum memiliki file PPT di OneDrive. Generate PPT dari template section agar bisa mulai diedit.</p>
-                                        <button type="button" class="primary" id="btnGenerate">Generate PPT dari template section</button>
+                                        <div class="drop gen-drop" id="genDrop" tabindex="0" role="button" aria-label="Generate PPT: pilih file PPTX">
+                                            <strong>Generate PPT dari template section</strong>
+                                            <span>Prototipe: seret file .pptx ke sini atau klik untuk memilih. PPT langsung dikonversi ke CKEditor (report engine, tanpa LLM).</span>
+                                        </div>
                                     </div>
+                                    <input type="file" id="pptFile" accept=".pptx" hidden>
                                     <div id="pptReady">
                                     <div class="ppt-top">
                                         <span class="lbl">Pratinjau PPT (SharePoint embed) · <span id="srcName"></span><span class="render-note" id="renderNote"></span></span>
                                         <a href="#" id="btnSharepoint">Buka di SharePoint</a>
                                         <button type="button" class="ghost sm" id="btnDesktop">Buka di Desktop</button>
+                                        <button type="button" class="ghost sm" id="btnReplace">Ganti PPT</button>
                                         <span class="sp"></span>
                                         <button type="button" class="primary" id="btnConvert">Konversi ke CKEditor</button>
                                     </div>
@@ -502,7 +531,7 @@
                                         </div>
                                     </div>
                                     <div class="mapped">Mapping sudah ditetapkan di Predefine Content</div>
-                                    <p class="foot">Konversi sekali jalan. Isi masuk ke sub-section sesuai mapping. Setelah konversi, PPT tetap tersimpan.</p>
+                                    <p class="foot">Konversi sekali jalan dengan report engine (aturan, tanpa LLM). Isi masuk ke sub-section sesuai mapping. Setelah konversi, PPT tetap tersimpan.</p>
                                     </div>
                                 </div>
                                 <div id="ckWrap" hidden>
@@ -517,6 +546,7 @@
                                             <p id="chkSummary"></p>
                                         </div>
                                         <span class="sp"></span>
+                                        <a class="ghost-link" id="docxLink" hidden>Unduh DOCX (hasil otomatis)</a>
                                         <button type="button" class="primary" id="btnToCk">Lanjut ke CKEditor</button>
                                     </div>
                                     <div id="chkList"></div>
@@ -739,7 +769,7 @@
 
         function renderThumbs() {
             $('thumbs').innerHTML = SLIDES.map((s, i) => {
-                const warn = ckReady && s.f && s.f.length;
+                const warn = ckReady && s.f && s.f.length && !s.fix;
                 return '<button type="button" class="thumb' + (i === cur ? ' on' : '') + '" data-i="' + i + '" aria-label="Slide ' + (i + 1) + '">' +
                     '<div class="n"><span>Slide ' + (i + 1) + (warn ? ' <span class="warn" title="Perlu dicek">⚠</span>' : '') + '</span><span>' + (i === cur ? 'Aktif' : '') + '</span></div>' +
                     (hasImg() ? '<img loading="lazy" src="' + slideImg(s, 'thumb') + '" alt="">'
@@ -812,32 +842,128 @@
             $('ckWrap').hidden = !ck;
             $('checkWrap').hidden = !check;
             $('btnConvert').textContent = ckReady ? 'Konversi ulang ke CKEditor' : 'Konversi ke CKEditor';
+            const open = CHECK.filter(s => !s.fix).length;
             $('btnCheck').hidden = !(ckReady && CHECK.length);
-            $('btnCheck').textContent = '⚠ Slide perlu dicek (' + CHECK.length + ')';
+            $('btnCheck').textContent = open ? '⚠ Slide perlu dicek (' + open + ')' : '✓ Review slide (' + CHECK.length + ' ditangani)';
             if (ck) renderCk();
             if (check) renderCheck();
         }
 
-        // Langkah setelah konversi: hanya slide yang otomatis ditandai perlu dicek (tanpa pelabelan oleh user)
-        function renderCheck() {
-            const total = SLIDES.length;
+        // Review setelah konversi: slide yang ditandai report engine. Per slide pengguna memilih
+        // perbaiki manual (edit hasil langsung), perbaiki dengan AI (prompt terisi saran), atau tandai sudah benar.
+        const FIX_LABEL = { manual: 'Diperbaiki manual', ai: 'Diperbaiki dengan AI', ok: 'Sudah benar' };
+        const FIXUI = {};   // per nomor slide: { mode: 'manual'|'ai'|null, prompt, busy, err }
+        const ui = s => FIXUI[s.n] || (FIXUI[s.n] = { mode: null, prompt: s.prompt || '', busy: false, err: '' });
+
+        function renderSummary() {
+            const open = CHECK.filter(s => !s.fix).length;
             $('chkSummary').textContent = CHECK.length
-                ? CHECK.length + ' dari ' + total + ' slide sebaiknya dicek. Slide lain tidak terdeteksi masalah. Hasil sudah dimasukkan ke CKEditor; bagian ini hanya petunjuk.'
+                ? CHECK.length + ' dari ' + SLIDES.length + ' slide ditandai report engine. ' +
+                  (open ? open + ' belum ditangani: perbaiki manual, perbaiki dengan AI, atau tandai sudah benar. ' : 'Semua sudah ditangani. ') +
+                  'Hasil otomatis sudah ada di CKEditor.'
                 : 'Tidak ada slide yang terdeteksi bermasalah.';
+            $('btnToCk').textContent = open ? 'Lanjut ke CKEditor' : 'Selesai, buka CKEditor';
+        }
+
+        function renderCheck() {
+            renderSummary();
             if (!CHECK.length) { $('chkList').innerHTML = '<div class="chk-ok">Semua slide terkonversi tanpa tanda. Lanjutkan ke CKEditor untuk mengedit.</div>'; return; }
-            $('chkList').innerHTML = CHECK.map(s => {
-                const i = SLIDES.indexOf(s);
-                return '<div class="chk-item">' +
-                    '<div class="top"><b>Slide ' + (i + 1) + ': ' + esc(s.t) + '</b><small>' + esc(pathOf(s.s)) + '</small>' +
-                    '<button type="button" class="ghost sm" data-jump="' + s.n + '">Buka di CKEditor</button></div>' +
-                    '<div class="cols">' +
-                    '<div><div class="lbl">Slide asli</div>' + (hasImg() ? '<img class="slide" loading="lazy" src="' + slideImg(s, 'preview') + '" alt="Slide ' + (i + 1) + '">'
-                        : '<div class="render-note">Pratinjau gambar tidak tersedia.</div>') + '</div>' +
-                    '<div><div class="lbl">Kenapa perlu dicek</div><ul class="flags">' + s.f.map(f => '<li>' + esc(f.msg) + '</li>').join('') + '</ul>' +
-                    '<div class="lbl">Hasil di CKEditor</div><div class="res">' + (s.html || '') + '</div></div>' +
-                    '</div></div>';
-            }).join('');
-            document.querySelectorAll('[data-jump]').forEach(b => b.onclick = () => jumpTo(+b.dataset.jump));
+            $('chkList').innerHTML = CHECK.map(s => '<div class="chk-item" id="chk' + s.n + '"></div>').join('');
+            CHECK.forEach(renderItem);
+        }
+
+        function renderItem(s) {
+            const el = $('chk' + s.n), u = ui(s), i = SLIDES.indexOf(s);
+            el.classList.toggle('fixed', !!s.fix);
+            const seg = (mode, label) => '<button type="button" class="ghost sm' + (u.mode === mode ? ' on' : '') + '" data-mode="' + mode + '"' +
+                (u.busy ? ' disabled' : '') + '>' + label + '</button>';
+            let panel = '';
+            if (u.mode === 'manual') {
+                panel = '<div class="fix-panel"><p class="hint">Edit langsung di kotak “Hasil di CKEditor” di atas (teks, urutan, hapus bagian), lalu simpan.</p>' +
+                    '<div class="row2"><button type="button" class="primary" data-act="save">Simpan perbaikan</button>' +
+                    '<button type="button" class="ghost sm" data-act="cancel">Batal</button></div></div>';
+            } else if (u.mode === 'ai') {
+                panel = '<div class="fix-panel"><p class="hint">Prompt terisi saran dari tanda di atas; ubah sesuai kebutuhan. AI hanya menyusun ulang isi slide (teks dan angka tidak diubah). Memakai kuota LLM.</p>' +
+                    '<textarea id="prompt' + s.n + '" aria-label="Prompt AI untuk slide ' + (i + 1) + '"' + (u.busy ? ' disabled' : '') + '>' + esc(u.prompt) + '</textarea>' +
+                    '<div class="row2"><button type="button" class="primary" data-act="ai"' + (u.busy ? ' disabled' : '') + '>Jalankan AI</button>' +
+                    '<button type="button" class="ghost sm" data-act="reset-prompt"' + (u.busy ? ' disabled' : '') + '>Pakai saran</button>' +
+                    (u.busy ? '<span class="busy">AI menyusun ulang slide…</span>' : '') +
+                    (u.err ? '<span class="err">' + esc(u.err) + '</span>' : '') + '</div></div>';
+            }
+            el.innerHTML =
+                '<div class="top"><b>Slide ' + (i + 1) + ': ' + esc(s.t) + '</b><small>' + esc(pathOf(s.s)) + '</small>' +
+                '<span class="st">' + (s.fix ? FIX_LABEL[s.fix] : 'Perlu dicek') + '</span>' +
+                '<button type="button" class="ghost sm" data-jump="' + s.n + '">Buka di CKEditor</button></div>' +
+                '<div class="cols">' +
+                '<div><div class="lbl">Slide asli</div>' + (hasImg() ? '<img class="slide" loading="lazy" src="' + slideImg(s, 'preview') + '" alt="Slide ' + (i + 1) + '">'
+                    : '<div class="render-note">Pratinjau gambar tidak tersedia.</div>') + '</div>' +
+                '<div><div class="lbl">Kenapa perlu dicek</div><ul class="flags">' + s.f.map(f => '<li>' + esc(f.msg) + '</li>').join('') + '</ul>' +
+                '<div class="lbl">Hasil di CKEditor</div><div class="res"' + (u.mode === 'manual' ? ' contenteditable="true"' : '') + '>' + (s.html || '') + '</div></div>' +
+                '</div>' +
+                '<div class="fix-bar"><span class="q">Perbaiki:</span>' + seg('manual', 'Manual') + seg('ai', 'Dengan AI prompt') +
+                '<span class="sp"></span>' +
+                (s.edited || s.fix ? '<button type="button" class="ghost sm" data-act="revert"' + (u.busy ? ' disabled' : '') + '>Kembalikan hasil otomatis</button>' : '') +
+                (s.fix ? '' : '<button type="button" class="ghost sm" data-act="ok"' + (u.busy ? ' disabled' : '') + '>Tandai sudah benar</button>') +
+                '</div>' + panel;
+            el.querySelector('[data-jump]').onclick = () => jumpTo(s.n);
+            el.querySelectorAll('[data-mode]').forEach(b => b.onclick = () => {
+                u.mode = u.mode === b.dataset.mode ? null : b.dataset.mode; u.err = '';
+                renderItem(s);
+                if (u.mode === 'manual') el.querySelector('.res').focus();
+                if (u.mode === 'ai') $('prompt' + s.n).focus();
+            });
+            const ta = $('prompt' + s.n);
+            if (ta) ta.oninput = () => { u.prompt = ta.value; };
+            el.querySelectorAll('[data-act]').forEach(b => b.onclick = () => fixAction(s, b.dataset.act));
+        }
+
+        // hasil perbaikan dari server: slide + HTML CKEditor lengkap
+        function applyFix(s, d) {
+            Object.assign(s, { html: d.slide.html || '', fix: d.slide.fix, edited: d.slide.edited, f: d.slide.flags });
+            ckHtml = d.html;
+            renderItem(s); renderSummary(); renderThumbs(); renderMode();
+        }
+
+        async function postJson(url, body) {
+            const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+            const d = await r.json().catch(() => ({}));
+            if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+            return d;
+        }
+
+        async function fixAction(s, act) {
+            const u = ui(s), el = $('chk' + s.n);
+            if (act === 'cancel') { u.mode = null; renderItem(s); return; }
+            if (act === 'reset-prompt') { u.prompt = s.prompt || ''; renderItem(s); return; }
+            if (!jobId) { toast('Mode tampilan: perbaikan butuh server.'); return; }
+            try {
+                if (act === 'save') {
+                    const d = await postJson('/api/ck/fix/' + jobId + '/' + s.n, { action: 'manual', html: el.querySelector('.res').innerHTML });
+                    u.mode = null; applyFix(s, d); toast('Perbaikan manual slide ' + (SLIDES.indexOf(s) + 1) + ' disimpan.');
+                } else if (act === 'ok' || act === 'revert') {
+                    const d = await postJson('/api/ck/fix/' + jobId + '/' + s.n, { action: act });
+                    u.mode = null; applyFix(s, d);
+                } else if (act === 'ai') {
+                    u.prompt = $('prompt' + s.n).value.trim();
+                    if (!u.prompt) { u.err = 'Prompt AI masih kosong.'; renderItem(s); return; }
+                    u.busy = true; u.err = ''; renderItem(s);
+                    await postJson('/api/ck/ai/' + jobId + '/' + s.n, { prompt: u.prompt });
+                    pollAi(s);
+                }
+            } catch (e) { u.busy = false; u.err = e.message; renderItem(s); if (act !== 'ai') toast('Gagal: ' + e.message); }
+        }
+
+        function pollAi(s) {
+            const u = ui(s);
+            const t = setInterval(async () => {
+                try {
+                    const d = await (await fetch('/api/ck/ai/' + jobId + '/' + s.n)).json();
+                    if (d.status === 'running') return;
+                    clearInterval(t); u.busy = false;
+                    if (d.status === 'done') { u.mode = null; applyFix(s, d); toast('Slide ' + (SLIDES.indexOf(s) + 1) + ' disusun ulang dengan AI.'); }
+                    else { u.err = 'AI gagal: ' + (d.error || 'tidak diketahui') + '. Hasil sebelumnya tetap dipakai.'; renderItem(s); }
+                } catch (e) { clearInterval(t); u.busy = false; u.err = e.message; renderItem(s); }
+            }, 1500);
         }
 
         function jumpTo(n) {
@@ -868,23 +994,25 @@
         $('btnAccess').onclick = () => toast('Edit Access (simulasi).');
         $('btnPreview').onclick = () => toast('Preview dokumen (simulasi).');
 
+        // langkah konversi (sama dengan ckeditor_flow.STEPS); until = batas progres untuk mode tampilan
         const STEPS = [
-            { t: "Membaca slide PPT", until: 0.3 },
-            { t: "Memetakan slide ke section Predefine", until: 0.7 },
+            { t: "Merender slide PPT", until: 0.2 },
+            { t: "Menyusun layout dengan report engine (tanpa LLM)", until: 0.75 },
+            { t: "Memetakan slide ke section Predefine", until: 0.85 },
             { t: "Membuat konten CKEditor", until: 1 }
         ];
 
         function showModal(on) { $('modal').hidden = !on; }
 
-        // pct 0-100, done/total = slide, states = ['done'|'run'|'wait'] per langkah
-        function paintProgress(pct, done, total, states) {
+        // pct 0-100, done/total = slide, states = ['done'|'run'|'wait'] per langkah, labels = teks langkah dari server
+        function paintProgress(pct, done, total, states, labels) {
             $('pfill').style.width = pct + '%';
             $('pbar').setAttribute('aria-valuenow', pct);
             $('ppct').textContent = pct + '%';
             $('pcount').textContent = 'Slide ' + done + ' dari ' + total;
             const label = { done: 'Selesai', run: 'Berjalan', wait: 'Menunggu' };
-            $('psteps').innerHTML = STEPS.map((s, i) =>
-                '<li class="' + states[i] + '"><span>' + s.t + '</span><span class="st">' + label[states[i]] + '</span></li>'
+            $('psteps').innerHTML = states.map((st, i) =>
+                '<li class="' + st + '"><span>' + esc(labels ? labels[i] : STEPS[i].t) + '</span><span class="st">' + label[st] + '</span></li>'
             ).join('');
         }
 
@@ -919,34 +1047,52 @@
             toast('Konversi gagal: ' + msg);
         }
 
+        // hasil konversi dari server -> SLIDES (tanda, saran prompt AI, status perbaikan) + HTML CKEditor
+        async function loadResult() {
+            const h = await (await fetch('/api/ck/html/' + jobId)).json();
+            ckHtml = h.html;
+            const byN = {};
+            h.slides.forEach(x => byN[x.n] = x);
+            SLIDES = SLIDES.map(s => {
+                const x = byN[s.n] || {};
+                return Object.assign({}, s, { s: x.section || s.s, m: x.method || s.m, f: x.flags || [], html: x.html || '',
+                    prompt: x.prompt || '', fix: x.fix || null, edited: !!x.edited });
+            });
+            Object.keys(FIXUI).forEach(k => delete FIXUI[k]);
+            $('docxLink').hidden = !h.docx;
+            $('docxLink').href = '/api/ck/docx/' + jobId;
+            if (h.render && h.render !== RENDER) setRender(h.render);
+        }
+
+        function pollConvert() {
+            clearInterval(timerConv);
+            timerConv = setInterval(async () => {
+                try {
+                    const j = await (await fetch('/api/ck/status/' + jobId)).json();
+                    paintProgress(j.pct, j.done, j.total, j.steps.map(s => s.state), j.steps.map(s => s.t));
+                    if (j.status === 'error') { clearInterval(timerConv); failConvert(j.error); }
+                    if (j.status === 'done') {
+                        clearInterval(timerConv);
+                        await loadResult();
+                        finishConvert();
+                    }
+                } catch (e) { clearInterval(timerConv); failConvert(e.message); }
+            }, 300);
+        }
+
         async function realConvert() {
-            const total = SLIDES.length;
-            paintProgress(0, 0, total, ['run', 'wait', 'wait']);
+            paintProgress(0, 0, SLIDES.length, STEPS.map((s, i) => i ? 'wait' : 'run'));
             try {
                 const r = await fetch('/api/ck/convert/' + jobId, { method: 'POST' });
                 if (!r.ok) throw new Error('HTTP ' + r.status);
             } catch (e) { return failConvert(e.message); }
-            timerConv = setInterval(async () => {
-                try {
-                    const j = await (await fetch('/api/ck/status/' + jobId)).json();
-                    paintProgress(j.pct, j.done, j.total, j.steps.map(s => s.state));
-                    if (j.status === 'error') { clearInterval(timerConv); failConvert(j.error); }
-                    if (j.status === 'done') {
-                        clearInterval(timerConv);
-                        const h = await (await fetch('/api/ck/html/' + jobId)).json();
-                        ckHtml = h.html;
-                        SLIDES = SLIDES.map((s, i) => Object.assign({}, s, {
-                            s: h.slides[i].section, m: h.slides[i].method, f: h.slides[i].flags || [], html: h.slides[i].html || ''
-                        }));
-                        if (h.render && h.render !== RENDER) setRender(h.render);
-                        finishConvert();
-                    }
-                } catch (e) { clearInterval(timerConv); failConvert(e.message); }
-            }, 250);
+            pollConvert();
         }
 
         function startConvert() {
             if (converting) { showModal(true); return; }
+            if (ckReady && CHECK.some(s => s.fix) &&
+                !confirm('Konversi ulang akan menghapus perbaikan di halaman review. Lanjutkan?')) return;
             converting = true;
             showModal(true);
             if (jobId) return realConvert();
@@ -961,9 +1107,9 @@
 
         // PPT diambil dari "OneDrive" (mockup: work/onedrive di server)
         function applyPpt(d) {
-            jobId = d.id; ckHtml = ''; ckReady = false; cur = 0; pptExists = true; CHECK = [];
+            jobId = d.id; ckHtml = ''; ckReady = false; cur = 0; pptExists = true; CHECK = []; mode = 'ppt';
             TOC = d.toc.map(n => ({ c: n.code, t: n.title, l: n.level }));
-            SLIDES = d.slides.map(s => ({ n: s.n, t: s.title, b: s.lines.slice(0, 8), s: s.section, m: s.method, f: s.flags || [] }));
+            SLIDES = d.slides.map(s => ({ n: s.n, t: s.title, b: s.lines.slice(0, 8), s: s.section, m: s.method, f: [] }));
             $('srcName').textContent = d.source + ' · ' + SLIDES.length + ' slide';
             setRender(d.render);
             render();
@@ -991,25 +1137,47 @@
                 const r = await fetch('/api/ck/ppt');
                 const d = await r.json();
                 if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
-                if (d.exists) applyPpt(d);
+                if (d.exists) {
+                    applyPpt(d);
+                    // kembali ke posisi terakhir setelah refresh: hasil konversi / konversi yang masih berjalan
+                    if (d.status === 'done') { await loadResult(); ckReady = true; CHECK = SLIDES.filter(s => s.f.length); mode = CHECK.length ? 'check' : 'ck'; render(); }
+                    else if (d.status === 'running') { converting = true; showModal(true); pollConvert(); }
+                }
             } catch (e) { toast('Gagal memeriksa PPT: ' + e.message); }
             renderMode(); renderToc();
         }
 
-        $('btnGenerate').onclick = async () => {
-            const b = $('btnGenerate');
-            b.disabled = true; b.textContent = 'Membuat PPT di OneDrive...';
+        // Generate PPT (prototipe): PPT yang diunggah menjadi PPT dokumen, lalu langsung dikonversi ke CKEditor
+        async function uploadPpt(f) {
+            if (!f) return;
+            if (!/\.pptx$/i.test(f.name)) { toast('Pilih file .pptx.'); return; }
+            if (converting) { toast('Tunggu konversi yang sedang berjalan selesai.'); return; }
+            if (ckReady && CHECK.some(s => s.fix) && !confirm('PPT baru akan menggantikan dokumen ini beserta perbaikannya. Lanjutkan?')) return;
+            const gd = $('genDrop');
+            gd.querySelector('strong').textContent = 'Membuat PPT di OneDrive…';
+            const fd = new FormData();
+            fd.append('pptx', f);
             try {
-                const r = await fetch('/api/ck/generate', { method: 'POST' });
+                const r = await fetch('/api/ck/upload', { method: 'POST', body: fd });
                 const d = await r.json();
                 if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
                 applyPpt(d);
-                toast('PPT berhasil dibuat di OneDrive dari template section.');
+                toast('PPT siap. Konversi ke CKEditor dimulai otomatis.');
+                startConvert();
             } catch (e) {
                 toast('Gagal membuat PPT: ' + e.message);
             }
-            b.disabled = false; b.textContent = 'Generate PPT dari template section';
-        };
+            gd.querySelector('strong').textContent = 'Generate PPT dari template section';
+            $('pptFile').value = '';
+        }
+        const pickPpt = () => $('pptFile').click();
+        $('pptFile').onchange = () => uploadPpt($('pptFile').files[0]);
+        $('genDrop').onclick = pickPpt;
+        $('genDrop').onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pickPpt(); } };
+        ['dragover', 'dragenter'].forEach(ev => $('genDrop').addEventListener(ev, e => { e.preventDefault(); $('genDrop').classList.add('over'); }));
+        ['dragleave', 'drop'].forEach(ev => $('genDrop').addEventListener(ev, e => { e.preventDefault(); $('genDrop').classList.remove('over'); }));
+        $('genDrop').addEventListener('drop', e => uploadPpt(e.dataTransfer.files[0]));
+        $('btnReplace').onclick = pickPpt;
 
         $('btnConvert').onclick = startConvert;
         $('bgBtn').onclick = () => { showModal(false); if (converting) toast('Konversi berjalan di latar belakang.'); };

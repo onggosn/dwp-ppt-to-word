@@ -1,11 +1,14 @@
 """PPT -> CKEditor flow (seamless editing), backend for templates/index_dwp.html.
 
-Independent of converter.py (no Docling / LLM needed). It:
-  1. reads the slides of the document .pptx (mock OneDrive: work/onedrive, generated from docs/test.pptx)
-     with layout_engine (slide geometry -> headings, lists, picture+caption tables, data tables),
-     renders the slides with PowerPoint and crops every picture from the render,
-  2. maps every slide to a sub-section (leaf of the section tree, like Mapping Section PPT in DWP),
-  3. builds CKEditor-ready HTML grouped by section, in one run, with real progress.
+Independent of converter.py (no Docling needed). It:
+  1. takes the document .pptx (prototype: "Generate PPT" = the user uploads a deck, kept in the mock
+     OneDrive folder work/onedrive), reads the slides for the PPT tab (titles, lines, section mapping) and
+     renders them with PowerPoint in the background,
+  2. converts the deck with report_engine, rules only (no LLM), reusing that render,
+  3. maps every slide to a sub-section (leaf of the section tree, like Mapping Section PPT in DWP) and
+     builds CKEditor-ready HTML grouped by section, with real progress,
+  4. review: slides the report engine flagged can be fixed by hand (edited HTML), re-planned by the LLM
+     with a reviewer prompt (prefilled with a recommendation from the flags), marked OK, or reverted.
 
 Register in app.py:
     import ckeditor_flow
@@ -19,12 +22,10 @@ Slide -> section mapping order:
     4. default  first leaf section
 A tag that points to a parent section is moved to the first leaf under it.
 """
-import dataclasses
 import html
 import json
 import os
 import re
-import shutil
 import threading
 import time
 import uuid
@@ -36,11 +37,11 @@ from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 
 import layout_engine
+import report_engine
 
 HERE = Path(__file__).resolve().parent
-MOCK_TEMPLATE = HERE / "docs" / "test.pptx"  # sementara: pengganti PPT template section di OneDrive
-MOCK_NAME = "DWP_Buku_3a.pptx"
-STEP_DELAY = float(os.environ.get("DWP_CK_STEP_DELAY", "0.08"))  # seconds per slide per phase (visible progress)
+MOCK_NAME = "DWP_Buku_3a.pptx"   # nama file PPT dokumen di "OneDrive" (prototipe: isinya PPT yang diunggah)
+STEP_DELAY = float(os.environ.get("DWP_CK_STEP_DELAY", "0.02"))  # seconds per slide per phase (visible progress)
 
 DEFAULT_SECTIONS = [
     {"code": "1", "title": "Bab 1 Pendahuluan"},
@@ -57,8 +58,30 @@ DEFAULT_SECTIONS = [
 ]
 
 TAG_RE = re.compile(r"(?:\bSEC[:=_\-\s]*|\[\[)\s*(\d+(?:\.\d+)*)\s*(?:\]\])?", re.IGNORECASE)
-STEPS = ["Membaca slide PPT", "Memetakan slide ke section Predefine", "Membuat konten CKEditor"]
-WEIGHTS = (0.3, 0.4, 0.3)
+STEPS = ["Merender slide PPT", "Menyusun layout dengan report engine (tanpa LLM)",
+         "Memetakan slide ke section Predefine", "Membuat konten CKEditor"]
+WEIGHTS = (0.2, 0.55, 0.1, 0.15)
+
+# tanda report engine (rules_flags) -> (kenapa perlu dicek, prompt AI yang disarankan)
+FLAG_INFO = {
+    "dense": ("Slide padat (banyak teks dan objek); urutan atau pengelompokan isi bisa keliru.",
+              "Kelompokkan isi per panel/kolom dari kiri ke kanan: judul panel jadi heading, teksnya di bawahnya. "
+              "Grafik atau diagram beserta label kecilnya jadi satu gambar dengan caption-nya."),
+    "no_title": ("Judul slide tidak terdeteksi.",
+                 "Jadikan teks judul di bagian atas slide sebagai heading level 1."),
+    "uncaptioned": ("Ada beberapa gambar/grafik tanpa keterangan.",
+                    "Pasangkan setiap grafik atau gambar dengan label/bar judul tepat di atasnya sebagai caption."),
+    "dropped_text": ("Ada teks panjang yang tidak ikut ke dokumen.",
+                     "Pastikan semua kalimat di slide tetap muncul sebagai teks; jangan buang teks yang panjang."),
+    "fragments": ("Banyak potongan teks pendek, kemungkinan label diagram yang tercecer.",
+                  "Potongan teks pendek ini adalah label diagram: jadikan diagram beserta labelnya satu gambar."),
+    "duplicate_heading": ("Ada heading yang muncul dua kali.",
+                          "Tulis setiap heading sekali saja; buang heading yang dobel."),
+    "colour_table": ("Ada tabel yang maknanya di warna sel (mis. Gantt / timeline).",
+                     "Tabel ini bermakna lewat warna sel (Gantt/timeline): jadikan satu gambar selebar halaman, "
+                     "bukan tabel teks."),
+}
+FIX_STATES = ("manual", "ai", "ok")
 
 
 # ------------------------------------------------------------------ sections
@@ -186,61 +209,50 @@ def render_previews(pptx_path, job_dir, numbers):
     return True
 
 
-def render_media(pptx_path, job_dir, slides, on_slide=None, rendered=None):
-    """Crop tiap gambar dari render slide (render dibuat kalau belum ada). Tanpa PowerPoint: gambar asli
-    dari PPTX. Baris gambar yang gagal disimpan dibuang. Aman dipanggil ulang (konversi ulang)."""
-    job_dir = Path(job_dir)
-    if rendered is None:
-        rendered = render_previews(pptx_path, job_dir, [s["n"] for s in slides])
-    for s in slides:
-        render = layout_engine.load_render(job_dir / "slides" / f"slide{s['n']}.png") if rendered else None
-        for b in s["blocks"]:
-            if b.type != "figures":
-                continue
-            rows = []
-            for row in b.rows:
-                key = row.get("key", row["img"])         # path tujuan awal = kunci ke box di slide["pending"]
-                box = s["pending"].get(key)
-                saved = layout_engine.save_box_image(box, key, render) if box else None
-                if saved:
-                    rows.append(dict(row, img=saved, key=key))
-            b.rows = rows
-        s["blocks"] = [b for b in s["blocks"] if b.type != "figures" or b.rows]
-        if on_slide:
-            on_slide(s["n"])
-    return rendered
+# ------------------------------------------------------------------ report engine -> CKEditor HTML
+def report_fragments(job_id, out_dir, rel):
+    """review.json dari report_engine -> {nomor slide: hasil}. Gambar di fragmen dirujuk "media/<nama>",
+    diganti ke URL file job (rel = folder hasil relatif terhadap folder job)."""
+    review = json.loads((Path(out_dir) / "review.json").read_text(encoding="utf-8"))
+    plans = json.loads((Path(out_dir) / "plans.json").read_text(encoding="utf-8"))
+    titles = {p["n"]: p["title"] for p in plans}
+    prefix = f'src="/api/ck/file/{job_id}/{rel}/media/'
+    out = {}
+    for s in review["slides"]:
+        frag = s["html"].replace('src="media/', prefix)
+        out[s["n"]] = {"auto": frag, "html": frag, "kind": s["kind"], "flags": s["flags"],
+                       "title": titles.get(s["n"], ""), "fix": None}
+    return out
 
 
-# ------------------------------------------------------------------ CKEditor HTML
-def _slide_html(slide, job_id, title_level):
-    """Blok layout_engine -> HTML. Judul slide sudah ditulis terpisah (dengan data-slide), jadi heading
-    level 1 di awal dilewati dan heading lain digeser ke bawah judul slide."""
-    blocks = slide["blocks"]
-    if blocks and blocks[0].type == "heading" and blocks[0].level == 1:
-        blocks = blocks[1:]
-    shifted = [dataclasses.replace(b, level=min(title_level + b.level - 1, 6)) if b.type == "heading" else b
-               for b in blocks]
-    return layout_engine.blocks_to_html(
-        [shifted], img_url=lambda p: f"/api/ck/media/{job_id}/{Path(p).name}")
+def flag_list(codes):
+    return [{"code": c, "msg": FLAG_INFO.get(c, (c, ""))[0]} for c in codes]
 
 
-def build_ck_html(job_id, slides, toc, mapping):
+def recommended_prompt(codes):
+    """Prompt AI yang disarankan untuk slide bertanda: gabungan saran per tanda."""
+    lines = [FLAG_INFO[c][1] for c in codes if c in FLAG_INFO]
+    return "\n".join(lines) or "Perbaiki susunan slide ini supaya urutan dan pengelompokan isinya sesuai slide asli."
+
+
+def build_ck_html(slides, toc, mapping, results):
+    """Section (pohon Predefine) -> hasil report engine per slide. Slide tanpa hasil (cover, penutup) dilewati."""
     by_code = {}
     for s in slides:
-        by_code.setdefault(mapping[s["n"]]["code"], []).append(s)
+        if s["n"] in results:
+            by_code.setdefault(mapping[s["n"]]["code"], []).append(s)
     parts = []
     for node in toc:
         h = min(node["level"] + 2, 6)
         parts.append(
             f'<h{h} data-section="{node["code"]}">{html.escape(node["code"])} {html.escape(node["title"])}</h{h}>')
         for s in by_code.get(node["code"], []):
-            sh = min(h + 1, 6)
-            parts.append(f'<h{sh} data-slide="{s["n"]}">{html.escape(s["title"])}</h{sh}>')
-            parts.append(_slide_html(s, job_id, sh))
+            parts.append(f'<div class="ck-slide" data-slide="{s["n"]}">{results[s["n"]]["html"]}</div>')
     return "\n".join(parts)
 
 
-def _public_slide(s, mapping):
+def _public_slide(s, mapping, results=None):
+    """Data slide untuk halaman. Setelah konversi: tanda report engine, saran prompt AI dan status perbaikan."""
     flat = []
     for b in s["blocks"]:
         if b.type in ("heading", "para", "bullet", "note"):
@@ -252,8 +264,14 @@ def _public_slide(s, mapping):
         elif b.type == "table":
             flat.append("[Tabel %d baris]" % len(b.rows))
     m = mapping[s["n"]]
-    return {"n": s["n"], "title": s["title"], "lines": flat, "section": m["code"], "method": m["method"],
-            "flags": s.get("flags", [])}
+    out = {"n": s["n"], "title": s["title"], "lines": flat, "section": m["code"], "method": m["method"],
+           "flags": []}
+    r = (results or {}).get(s["n"])
+    if r:
+        out.update(flags=flag_list(r["flags"]), kind=r["kind"], fix=r["fix"], edited=r["html"] != r["auto"])
+        if r["flags"]:
+            out.update(html=r["html"], prompt=recommended_prompt(r["flags"]))
+    return out
 
 
 # ------------------------------------------------------------------ flask wiring
@@ -292,7 +310,8 @@ def register(app, work_dir):
             raise ValueError("PPTX tidak memiliki slide.")
         j = dict(id=job_id, source=source, dir=d, src=Path(src), slides=slides, toc=toc, status="uploaded",
                  done=0, total=len(slides), pct=0, phase=0, steps=[{"t": t, "state": "wait"} for t in STEPS],
-                 html="", error=None, render="running", render_done=threading.Event())
+                 html="", error=None, render="running", render_done=threading.Event(), results={}, ai={},
+                 lock=threading.Lock())
         j["mapping"] = do_map(j)
         jobs[job_id] = j
         threading.Thread(target=_render_bg, args=(j,), daemon=True).start()
@@ -312,34 +331,47 @@ def register(app, work_dir):
 
     def payload(j):
         return dict(exists=True, id=j["id"], source=j["source"], toc=j["toc"], render=j["render"],
-                    slides=[_public_slide(s, j["mapping"]) for s in j["slides"]])
+                    status=j["status"], slides=[_public_slide(s, j["mapping"]) for s in j["slides"]])
 
     # Mockup OneDrive: satu dokumen aktif, disimpan di work/onedrive supaya bertahan antar refresh/restart.
+    # Prototipe: "Generate PPT" = pengguna mengunggah PPT; nama aslinya disimpan di source.txt.
     drive = work / "onedrive"
     drive_file = drive / MOCK_NAME
+    drive_name = drive / "source.txt"
     current = {"id": None}
+
+    def source_name():
+        return drive_name.read_text(encoding="utf-8").strip() if drive_name.exists() else MOCK_NAME
 
     @bp.get("/ppt")
     def ppt_state():
         j = jobs.get(current["id"])
         if not j and drive_file.exists():
             try:
-                j = make_job(drive_file, MOCK_NAME, load_sections())
+                j = make_job(drive_file, source_name(), load_sections())
             except Exception as e:
                 return jsonify(error=f"PPTX tidak dapat dibaca: {e}"), 500
             current["id"] = j["id"]
         return jsonify(payload(j) if j else {"exists": False})
 
-    @bp.post("/generate")
-    def generate():
-        """Generate PPT (template section) ke 'OneDrive'. Sementara menyalin docs/test.pptx."""
-        if not MOCK_TEMPLATE.exists():
-            return jsonify(error=f"Template contoh tidak ditemukan: {MOCK_TEMPLATE.name}"), 500
-        if not drive_file.exists():
-            drive.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(MOCK_TEMPLATE, drive_file)
+    @bp.post("/upload")
+    def upload():
+        """Generate PPT (prototipe): PPT yang diunggah menjadi PPT dokumen di 'OneDrive'."""
+        f = request.files.get("pptx")
+        if not f or not f.filename.lower().endswith(".pptx"):
+            return jsonify(error="Pilih file .pptx."), 400
+        drive.mkdir(parents=True, exist_ok=True)
+        tmp = drive / (MOCK_NAME + ".upload")
+        f.save(tmp)
         try:
-            j = make_job(drive_file, MOCK_NAME, load_sections())
+            Presentation(str(tmp))          # file rusak / bukan PPTX -> PPT lama tetap dipakai
+        except Exception as e:
+            tmp.unlink(missing_ok=True)
+            return jsonify(error=f"PPTX tidak dapat dibaca: {e}"), 400
+        os.replace(tmp, drive_file)
+        drive_name.write_text(Path(f.filename).name, encoding="utf-8")
+        try:
+            j = make_job(drive_file, Path(f.filename).name, load_sections())
         except Exception as e:
             return jsonify(error=f"PPTX tidak dapat dibaca: {e}"), 400
         current["id"] = j["id"]
@@ -368,17 +400,29 @@ def register(app, work_dir):
                 if STEP_DELAY:
                     time.sleep(STEP_DELAY)
 
-            # 1. membaca slide: tunggu render latar belakang (dimulai saat PPT dimuat), lalu crop gambar
+            # 1. render: tunggu render latar belakang (dimulai saat PPT dimuat)
             tick(0, 0)
             j["render_done"].wait(timeout=900)
-            render_media(j["src"], j["dir"], j["slides"], rendered=j["render"] == "done",
-                         on_slide=lambda n: tick(0, j["slides"].index(next(s for s in j["slides"] if s["n"] == n)) + 1))
+            tick(0, total)
+
+            # 2. report engine, aturan saja (tanpa LLM), memakai render yang sama
+            def on_progress(fraction, _message):
+                tick(1, min(total, max(0, round((fraction - 0.3) / 0.7 * total))))
+
+            rendered = j["render"] == "done"
+            out = j["dir"] / "report"
+            report_engine.convert_report(
+                j["src"], out / (Path(j["source"]).stem + ".docx"), planner="rules", render=rendered,
+                work_dir=out, slides_dir=j["dir"] / "slides" if rendered else None, progress=on_progress)
+            j["results"], j["ai"] = report_fragments(j["id"], out, "report"), {}
+            tick(1, total)
+
             j["mapping"] = do_map(j)
-            for i in range(1, total + 1):          # 2. memetakan ke section
-                tick(1, i)
-            j["html"] = build_ck_html(j["id"], j["slides"], j["toc"], j["mapping"])
-            for i in range(1, total + 1):          # 3. membuat konten CKEditor
+            for i in range(1, total + 1):          # 3. memetakan ke section
                 tick(2, i)
+            j["html"] = build_ck_html(j["slides"], j["toc"], j["mapping"], j["results"])
+            for i in range(1, total + 1):          # 4. membuat konten CKEditor
+                tick(3, i)
             j.update(status="done", pct=100)
             for st in j["steps"]:
                 st["state"] = "done"
@@ -395,13 +439,103 @@ def register(app, work_dir):
         j = get_job(job_id)
         if j["status"] != "done":
             return jsonify(error="Konversi belum selesai."), 409
-        slides = []
-        for s in j["slides"]:
-            pub = _public_slide(s, j["mapping"])
-            if pub["flags"]:
-                pub["html"] = _slide_html(s, j["id"], 3)     # untuk layar ringkasan "perlu dicek"
-            slides.append(pub)
-        return jsonify(html=j["html"], slides=slides, render=j["render"])
+        slides = [_public_slide(s, j["mapping"], j["results"]) for s in j["slides"]]
+        return jsonify(html=j["html"], slides=slides, render=j["render"],
+                       docx=(j["dir"] / "report" / (Path(j["source"]).stem + ".docx")).exists())
+
+    # ---- review: perbaiki slide bertanda (manual / AI / tandai OK / kembalikan hasil otomatis)
+    def get_result(j, n):
+        if j["status"] != "done" or n not in j["results"]:
+            abort(404)
+        return j["results"][n]
+
+    def slide_reply(j, n):
+        with j["lock"]:
+            j["html"] = build_ck_html(j["slides"], j["toc"], j["mapping"], j["results"])
+        s = next(s for s in j["slides"] if s["n"] == n)
+        pub = _public_slide(s, j["mapping"], j["results"])
+        pub["html"] = j["results"][n]["html"]
+        return jsonify(slide=pub, html=j["html"])
+
+    @bp.post("/fix/<job_id>/<int:n>")
+    def fix(job_id, n):
+        """action: manual (html hasil edit) | ok (hasil otomatis sudah benar) | revert (kembali ke hasil otomatis)."""
+        j = get_job(job_id)
+        r = get_result(j, n)
+        body = request.get_json(force=True, silent=True) or {}
+        action = body.get("action")
+        if action == "manual":
+            text = str(body.get("html", ""))
+            if re.search(r"<\s*(script|iframe|object|embed)\b|\son\w+\s*=", text, re.I):
+                return jsonify(error="HTML berisi script atau atribut event."), 400
+            r.update(html=text, fix="manual")
+        elif action == "ok":
+            r["fix"] = "ok"
+        elif action == "revert":
+            r.update(html=r["auto"], fix=None)
+        else:
+            return jsonify(error="action tidak dikenal."), 400
+        return slide_reply(j, n)
+
+    @bp.post("/ai/<job_id>/<int:n>")
+    def ai_fix(job_id, n):
+        """Perbaiki dengan AI: LLM menyusun ulang rencana slide ini dengan prompt reviewer (memakai kuota LLM)."""
+        j = get_job(job_id)
+        get_result(j, n)
+        body = request.get_json(force=True, silent=True) or {}
+        prompt = str(body.get("prompt", "")).strip()[:2000]
+        if not prompt:
+            return jsonify(error="Prompt AI kosong."), 400
+        if j["ai"].get(n, {}).get("status") == "running":
+            return jsonify(status="running")
+        j["ai"][n] = {"status": "running", "error": None}
+        provider = body.get("provider") or "gemini"
+        model = body.get("model") or report_engine.DEFAULT_MODEL
+        threading.Thread(target=_run_ai, args=(j, n, prompt, provider, model), daemon=True).start()
+        return jsonify(status="running")
+
+    def _run_ai(j, n, prompt, provider, model):
+        state = j["ai"][n]
+        try:
+            k = len(list((j["dir"] / "ai").glob(f"s{n}_*"))) + 1 if (j["dir"] / "ai").exists() else 1
+            rel = f"ai/s{n}_{k}"
+            out = j["dir"] / rel
+            rendered = j["render"] == "done"
+            stats = report_engine.convert_report(
+                j["src"], out / "slide.docx", planner="llm", provider=provider, model=model, only={n},
+                instruction=prompt, render=rendered, work_dir=out,
+                slides_dir=j["dir"] / "slides" if rendered else None)
+            if n in stats["llm_failed"] or not stats["llm_slides"] + stats["cache_hits"]:
+                plans = json.loads((out / "plans.json").read_text(encoding="utf-8"))
+                errors = next((p["errors"] for p in plans if p["n"] == n), [])
+                raise RuntimeError("; ".join(errors[-2:]) or "LLM tidak menghasilkan rencana yang sah.")
+            res = report_fragments(j["id"], out, rel).get(n)
+            if not res:
+                raise RuntimeError("Slide ini tidak menghasilkan isi dokumen.")
+            j["results"][n].update(html=res["html"], fix="ai")
+            state["status"] = "done"
+        except Exception as e:
+            state.update(status="error", error=str(e))
+
+    @bp.get("/ai/<job_id>/<int:n>")
+    def ai_state(job_id, n):
+        j = get_job(job_id)
+        state = j["ai"].get(n)
+        if not state:
+            abort(404)
+        if state["status"] == "done":
+            reply = slide_reply(j, n).get_json()
+            return jsonify(status="done", **reply)
+        return jsonify(state)
+
+    @bp.get("/docx/<job_id>")
+    def docx(job_id):
+        """DOCX hasil otomatis report engine (belum termasuk perbaikan di halaman review)."""
+        j = get_job(job_id)
+        name = Path(j["source"]).stem + ".docx"
+        if j["status"] != "done" or not (j["dir"] / "report" / name).exists():
+            abort(404)
+        return send_from_directory(j["dir"] / "report", name, as_attachment=True)
 
     @bp.get("/render/<job_id>")
     def render_state(job_id):
@@ -415,10 +549,13 @@ def register(app, work_dir):
             abort(404)
         return send_from_directory(j["dir"] / "slides", name)
 
-    @bp.get("/media/<job_id>/<path:name>")
-    def media(job_id, name):
+    @bp.get("/file/<job_id>/<path:name>")
+    def job_file(job_id, name):
+        """Gambar hasil report engine: report/media/... dan ai/s<n>_<k>/media/..."""
         j = get_job(job_id)
-        return send_from_directory(j["dir"] / "media", name)
+        if not re.fullmatch(r"(report|ai/s\d+_\d+)/media/[\w.\-]+", name):
+            abort(404)
+        return send_from_directory(j["dir"], name)
 
     app.register_blueprint(bp)
     return jobs
