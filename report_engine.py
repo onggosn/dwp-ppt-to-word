@@ -6,6 +6,8 @@ Alur:
   2. plan      layout_engine.analyse() (aturan geometri) -> rencana: daftar blok yang hanya merujuk id
                elemen (heading / text / table / figure / note) + daftar drop. Tiap slide diberi tipe
                (cover, divider, closing, text, charts, columns, dense) dan tanda bila hasil aturan meragukan.
+               Slide dense yang oleh aturan dipecah jadi banyak potongan pendek (infografis) ditulis sebagai
+               judul + pesan kunci + satu gambar (tipe infographic; perlu render PowerPoint, tanpa LLM).
   3. route     planner "auto": slide dense atau bertanda dikirim ke LLM (llm_planner) bersama render slide;
                LLM mengembalikan rencana dengan skema yang sama. LLM tidak pernah menulis teks, jadi angka
                tidak bisa berubah. Rencana LLM divalidasi (id ada, tidak dobel, teks penting tidak hilang);
@@ -67,7 +69,9 @@ ICON_NEAR = 0.02              # ikon sejauh ini dari judul kolom dianggap menemp
 ICON_MAX_PX = 256             # ikon asli (bisa ratusan KB) diperkecil ke ukuran ini
 WIDE_MIN_TEXTS = 5            # gambar berisi >= sekian teks / sel tabel (diagram, Gantt) ditulis selebar halaman
 WIDE_MIN_W = 0.5
-NO_LLM_KINDS = ("cover", "divider", "closing")
+INFOGRAPHIC_MIN_PIECES = 14   # slide dense yang oleh aturan dipecah jadi sebanyak ini potongan (paragraf pendek,
+INFOGRAPHIC_SHORT_SHARE = 0.6 # tabel lepas dihitung 2) dan sebagian besar teksnya pendek = infografis -> satu gambar
+NO_LLM_KINDS = ("cover", "divider", "closing", "infographic")
 PLANNERS = ("rules", "cached", "auto", "llm")
 
 ProgressFn = Callable[[float, str], None]
@@ -269,6 +273,51 @@ def rules_flags(sp: SlidePlan) -> list:
     if any(sp.els[b["id"]].fill_cells >= COLOUR_TABLE_CELLS for b in blocks if b["type"] == "table" and "id" in b):
         flags.append("colour_table")
     return flags
+
+
+def is_infographic(sp: SlidePlan) -> bool:
+    """Slide dense yang oleh aturan dipecah jadi banyak potongan teks pendek / tabel kecil (infografis, matriks,
+    alur proses): lebih terbaca sebagai satu gambar daripada puluhan label lepas."""
+    if sp.kind != "dense":
+        return False
+    blocks = sp.rules_plan["blocks"]
+    paras = [t for b in blocks if b["type"] in ("text", "heading") and b.get("level") != 1
+             for t in (para_text(p) for p in sp.els[b["id"]].paras) if t]
+    short = sum(1 for t in paras if len(t) < FRAGMENT_CHARS)
+    tables = sum(1 for b in blocks if b["type"] == "table")
+    return short + 2 * tables >= INFOGRAPHIC_MIN_PIECES and short >= INFOGRAPHIC_SHORT_SHARE * len(paras)
+
+
+def header_texts(els: dict, title) -> list:
+    """Pesan kunci tepat di bawah judul: teks lebar berurutan sebelum elemen lain (grafik, panel)."""
+    out, bottom = [], title.b
+    for b in sorted(els.values(), key=lambda b: (b.y, b.x)):
+        if (b is title or b.w * b.h >= 0.8                           # judul, latar belakang slide
+                or (b.y < title.b and b.b <= title.b + 0.02)            # pita judul: nomor slide, logo, tag
+                or (b.kind == "shape" and min(b.w, b.h) < 0.01)):      # garis pemisah
+            continue
+        if b.kind != "text" or not box_text(b) or b.w < 0.4 or b.filled or b.y - bottom > 0.05:
+            break
+        out.append(b)
+        bottom = max(bottom, b.b)
+    return out
+
+
+def infographic_plan(sp: SlidePlan) -> dict:
+    """Judul + pesan kunci di bawahnya tetap teks; sisa slide satu gambar selebar halaman (crop render)."""
+    els, title = sp.els, sp.info["title"]
+    key = {id(b): k for k, b in els.items()}
+    heads = header_texts(els, title) if title is not None else []
+    top = max([title.b if title is not None else 0.0] + [b.b for b in heads])
+    keep = {id(b) for b in heads} | ({id(title)} if title is not None else set())
+    body = [k for k, b in els.items() if id(b) not in keep and b.b > top + 0.005]
+    blocks = [{"type": "heading", "id": key[id(title)], "level": 1}] if title is not None else []
+    blocks += [{"type": "text", "id": key[id(b)]} for b in heads]
+    if body:
+        x, y, w, h = union([els[k] for k in body])
+        y2 = max(y, top)
+        blocks.append({"type": "figure", "ids": body, "box": [round(v, 5) for v in (x, y2, w, y + h - y2)]})
+    return {"blocks": blocks, "drop": [k for k, b in els.items() if id(b) not in keep and k not in body]}
 
 
 def boilerplate_labels(slides: list) -> set:
@@ -667,6 +716,10 @@ def convert_report(
         sp.rules_plan = normalize(rules_plan(els, info), els)
         sp.plan = sp.rules_plan
         sp.flags = rules_flags(sp)
+        if rendered and is_infographic(sp):
+            # satu gambar dari render (tanpa render PowerPoint tidak ada yang bisa di-crop)
+            sp.kind, sp.rules_plan, sp.flags = "infographic", infographic_plan(sp), []
+            sp.plan = sp.rules_plan
         if planner != "rules":
             sp.key = cache_key(slide, provider, model)
         slides.append(sp)

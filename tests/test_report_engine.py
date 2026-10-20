@@ -149,6 +149,43 @@ class HtmlLists(unittest.TestCase):
             self.assertEqual(self.frag(items), expected)
 
 
+class Infographic(unittest.TestCase):
+    """Slide dense yang pecah jadi banyak label pendek -> judul + pesan kunci + satu gambar."""
+
+    @staticmethod
+    def box(x, y, w, h, text, **kw):
+        b = report_engine.le.Box("text", x, y, w, h, **kw)
+        b.paras = [report_engine.le.Para([(text, False, False)])]
+        return b
+
+    def slide(self, label_text: str, kind: str = "dense"):
+        title = self.box(0.02, 0.02, 0.8, 0.06, "Judul Slide", is_title=True)
+        message = self.box(0.02, 0.09, 0.9, 0.04, "Pesan kunci tepat di bawah judul")
+        number = self.box(0.93, 0.02, 0.05, 0.05, "13")                     # nomor slide di pita judul
+        labels = [self.box(0.05 + 0.1 * (i % 8), 0.2 + 0.1 * (i // 8), 0.08, 0.04, f"{label_text} {i}")
+                  for i in range(16)]
+        els = {f"e{i}": b for i, b in enumerate([title, message, number] + labels, 1)}
+        sp = report_engine.SlidePlan(1, els, {"title": title}, kind=kind)
+        sp.rules_plan = {"blocks": [{"type": "heading", "id": "e1", "level": 1}] +
+                                   [{"type": "text", "id": k} for k in list(els)[1:]], "drop": []}
+        return sp
+
+    def test_fragmented_dense_slide_is_one_image(self):
+        sp = self.slide("Label")
+        self.assertTrue(report_engine.is_infographic(sp))
+        plan = report_engine.infographic_plan(sp)
+        self.assertEqual([(b["type"], b.get("id")) for b in plan["blocks"]],
+                         [("heading", "e1"), ("text", "e2"), ("figure", None)])
+        self.assertEqual(sorted(plan["blocks"][2]["ids"]), sorted(f"e{i}" for i in range(4, 20)))
+        self.assertEqual(plan["drop"], ["e3"])
+        self.assertGreaterEqual(plan["blocks"][2]["box"][1], 0.13)          # crop dimulai di bawah pesan kunci
+
+    def test_running_text_or_other_kinds_stay_text(self):
+        long = "Paragraf panjang yang memang isi slide dan harus tetap bisa diedit di dokumen Word"
+        self.assertFalse(report_engine.is_infographic(self.slide(long)))
+        self.assertFalse(report_engine.is_infographic(self.slide("Label", kind="charts")))
+
+
 class LlmAnswerParsing(unittest.TestCase):
     def test_raw_control_characters(self):
         raw = '```json\n{"blocks": [{"type": "heading", "level": 1, "id": "e1"}], "drop": ["e2"], "x": "a\tb\nc"}\n```'
