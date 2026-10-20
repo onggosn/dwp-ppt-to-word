@@ -12,8 +12,14 @@ Per slide (dipasangkan lewat judul):
 Bisa dipakai untuk hasil engine mana pun (layout_engine, report_engine, Docling+LLM), asal judul slide
 ditulis sebagai Heading 1.
 
+Acuan "perak" (--silver): tanpa DOCX acuan buatan tangan, rencana aturan dinilai terhadap rencana LLM yang
+sudah tersimpan di cache report_engine (work/plan_cache). Hanya slide yang punya rencana LLM tersimpan yang
+dinilai, dan tidak ada panggilan LLM. Rencana LLM bukan kebenaran mutlak, tapi menunjukkan di mana aturan
+tertinggal pada slide sulit.
+
 CLI:
     python evaluate.py --gold docs/test3.docx --out work/test3_report.docx [--plans work/..._build/plans.json] [--detail]
+    python evaluate.py --silver "docs/test - Copy.pptx" [--detail]
 """
 from __future__ import annotations
 
@@ -166,7 +172,8 @@ def score_slide(gold: list, out: list) -> dict:
     return m
 
 
-def evaluate(gold_path: Path, out_path: Path, plans_path: Path | None = None) -> dict:
+def evaluate(gold_path: Path, out_path: Path, plans_path: Path | None = None, sources: set | None = None) -> dict:
+    """sources: hanya slide acuan dengan sumber rencana ini (menurut plans_path) yang dinilai."""
     gold, out = split_slides(read_items(gold_path)), split_slides(read_items(out_path))
     kinds = {}
     if plans_path and Path(plans_path).exists():
@@ -174,13 +181,15 @@ def evaluate(gold_path: Path, out_path: Path, plans_path: Path | None = None) ->
             kinds[norm(s["title"])] = (s["kind"], s["source"])
     results, taken = [], set()
     for title, items in gold:
+        kind, source = next((v for k, v in kinds.items()
+                             if SequenceMatcher(None, title, k, autojunk=False).ratio() >= TITLE_FUZZY), ("?", "?"))
+        if sources and source not in sources:
+            continue
         best, best_r = None, TITLE_FUZZY
         for j, (t2, _) in enumerate(out):
             r = SequenceMatcher(None, title, t2, autojunk=False).ratio()
             if j not in taken and r >= best_r:
                 best, best_r = j, r
-        kind, source = next((v for k, v in kinds.items()
-                             if SequenceMatcher(None, title, k, autojunk=False).ratio() >= TITLE_FUZZY), ("?", "?"))
         if best is None:
             results.append({"title": title, "kind": kind, "source": source, "score": 0.0, "found": False})
             continue
@@ -193,7 +202,19 @@ def evaluate(gold_path: Path, out_path: Path, plans_path: Path | None = None) ->
     return {"slides": results,
             "overall": sum(r["score"] for r in results) / len(results) if results else 0.0,
             "by_kind": {k: sum(v) / len(v) for k, v in by_kind.items()},
-            "extra_slides": [t for j, (t, _) in enumerate(out) if j not in taken]}
+            "extra_slides": [] if sources else [t for j, (t, _) in enumerate(out) if j not in taken]}
+
+
+def silver(deck: Path, work: Path = Path("work") / "silver", render: bool = True) -> dict:
+    """Rencana aturan vs rencana LLM tersimpan untuk deck ini; keduanya ditulis dengan report_engine
+    (planner rules / cached), jadi tidak ada panggilan LLM."""
+    import report_engine   # import lambat: hanya untuk mode --silver
+
+    out = work / re.sub(r"\W+", "_", deck.stem)
+    for planner in ("cached", "rules"):
+        report_engine.convert_report(deck, out / f"{planner}.docx", planner=planner, render=render,
+                                     work_dir=out / f"{planner}_build")
+    return evaluate(out / "cached.docx", out / "rules.docx", out / "cached_build" / "plans.json", sources={"cache"})
 
 
 def print_report(res: dict, detail: bool):
@@ -216,13 +237,20 @@ def print_report(res: dict, detail: bool):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Skor DOCX hasil konversi terhadap DOCX acuan")
-    ap.add_argument("--gold", required=True, help="DOCX acuan yang benar (mis. docs/test3.docx)")
-    ap.add_argument("--out", required=True, help="DOCX hasil konversi")
+    ap.add_argument("--gold", help="DOCX acuan yang benar (mis. docs/test3.docx)")
+    ap.add_argument("--out", help="DOCX hasil konversi")
+    ap.add_argument("--silver", metavar="PPTX", help="nilai aturan terhadap rencana LLM tersimpan untuk deck ini")
+    ap.add_argument("--no-render", action="store_true", help="--silver: tanpa render PowerPoint (lebih cepat)")
     ap.add_argument("--plans", default=None, help="plans.json dari report_engine (tipe & sumber per slide)")
     ap.add_argument("--detail", action="store_true", help="tampilkan paragraf yang hilang/lebih/salah peran")
     ap.add_argument("--json", action="store_true", help="keluaran JSON")
     a = ap.parse_args()
-    result = evaluate(Path(a.gold), Path(a.out), Path(a.plans) if a.plans else None)
+    if a.silver:
+        result = silver(Path(a.silver), render=not a.no_render)
+    elif a.gold and a.out:
+        result = evaluate(Path(a.gold), Path(a.out), Path(a.plans) if a.plans else None)
+    else:
+        ap.error("isi --gold dan --out, atau --silver")
     if a.json:
         print(json.dumps(result, ensure_ascii=False, indent=1))
     else:

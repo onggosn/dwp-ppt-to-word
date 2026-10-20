@@ -20,6 +20,7 @@ CLI:
     python report_engine.py docs/test3.pptx -o work/test3_report.docx
     python report_engine.py docs/test3.pptx -o work/test3_report.docx --html work/test3_report.html
     python report_engine.py docs/test2.pptx -o work/test2_report.docx --planner rules   # tanpa LLM
+    python report_engine.py docs/test2.pptx -o work/test2_cached.docx --planner cached # rencana LLM tersimpan saja
     python report_engine.py docs/test3.pptx -o work/test3_llm.docx --planner llm        # semua slide ke LLM
 """
 from __future__ import annotations
@@ -67,6 +68,7 @@ ICON_MAX_PX = 256             # ikon asli (bisa ratusan KB) diperkecil ke ukuran
 WIDE_MIN_TEXTS = 5            # gambar berisi >= sekian teks / sel tabel (diagram, Gantt) ditulis selebar halaman
 WIDE_MIN_W = 0.5
 NO_LLM_KINDS = ("cover", "divider", "closing")
+PLANNERS = ("rules", "cached", "auto", "llm")
 
 ProgressFn = Callable[[float, str], None]
 
@@ -433,19 +435,28 @@ def element_rows(els: dict) -> list:
     return rows
 
 
+def load_cached_plan(sp: SlidePlan, cache_dir: Optional[Path]) -> bool:
+    """Rencana LLM yang sudah tersimpan untuk slide ini (sah menurut validasi sekarang) -> dipakai."""
+    cache_file = cache_dir / f"{sp.key}.json" if cache_dir else None
+    if not (cache_file and cache_file.exists()):
+        return False
+    try:
+        plan = json.loads(cache_file.read_text(encoding="utf-8"))["plan"]
+    except (ValueError, KeyError):
+        return False
+    if validate_plan(plan, sp.els):
+        return False
+    sp.plan, sp.source = normalize(plan, sp.els), "cache"
+    return True
+
+
 def plan_with_llm(sp: SlidePlan, render_png: Optional[Path], provider: str, model: str,
                   cache_dir: Optional[Path]) -> None:
+    if load_cached_plan(sp, cache_dir):
+        return
     import llm_planner   # import lambat: SDK provider hanya dimuat kalau LLM dipakai
 
     cache_file = cache_dir / f"{sp.key}.json" if cache_dir else None
-    if cache_file and cache_file.exists():
-        try:
-            plan = json.loads(cache_file.read_text(encoding="utf-8"))["plan"]
-            if not validate_plan(plan, sp.els):
-                sp.plan, sp.source = normalize(plan, sp.els), "cache"
-                return
-        except (ValueError, KeyError):
-            pass
     image = None
     if render_png and render_png.exists():
         image = llm_planner.slide_image(render_png)
@@ -622,10 +633,11 @@ def convert_report(
     progress: ProgressFn = _noop,
     only: Optional[set] = None,
 ) -> dict:
-    """planner: rules (tanpa LLM) | auto (LLM hanya untuk slide dense/bertanda) | llm (semua slide isi).
+    """planner: rules (tanpa LLM) | cached (rencana LLM tersimpan bila ada, sisanya aturan; tanpa panggilan LLM)
+    | auto (LLM hanya untuk slide dense/bertanda) | llm (semua slide isi).
     html_path: kalau diisi, juga menulis HTML mandiri untuk CKEditor dengan format yang sama.
     only: nomor slide yang dikonversi (untuk mencoba ulang slide tertentu); None = semua."""
-    if planner not in ("rules", "auto", "llm"):
+    if planner not in PLANNERS:
         raise ValueError(f"planner tidak dikenal: {planner}")
     pptx_path, docx_path = Path(pptx_path), Path(docx_path)
     work = Path(work_dir) if work_dir else docx_path.parent / (docx_path.stem + "_build")
@@ -667,6 +679,11 @@ def convert_report(
     else:
         targets = []
     t_plan = time.time()
+    if planner == "cached":
+        cache = Path(cache_dir) if cache_dir else None
+        for sp in slides:
+            if sp.kind not in NO_LLM_KINDS:
+                load_cached_plan(sp, cache)
     if targets:
         progress(0.35, f"LLM menyusun rencana {len(targets)} slide")
         cache = Path(cache_dir) if cache_dir else None
@@ -718,8 +735,9 @@ if __name__ == "__main__":
     ap.add_argument("pptx")
     ap.add_argument("-o", "--output", default="Report_Output.docx")
     ap.add_argument("--html", default=None, help="juga tulis HTML mandiri untuk CKEditor ke path ini")
-    ap.add_argument("--planner", choices=["auto", "rules", "llm"], default="auto",
-                    help="auto: LLM hanya untuk slide dense/bertanda (default); rules: tanpa LLM; llm: semua slide")
+    ap.add_argument("--planner", choices=PLANNERS, default="auto",
+                    help="auto: LLM hanya untuk slide dense/bertanda (default); rules: tanpa LLM; "
+                         "cached: rencana LLM yang sudah tersimpan, tanpa panggilan LLM; llm: semua slide")
     ap.add_argument("--provider", choices=["gemini", "ollama"], default="gemini")
     ap.add_argument("--model", default=DEFAULT_MODEL)
     ap.add_argument("--template", default=str(DEFAULT_TEMPLATE))

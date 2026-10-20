@@ -46,6 +46,7 @@ WIDE_MIN_W = 0.5          # gambar selebar ini atau lebih = baris penuh (colspan
 LABEL_MAX_H = 0.08        # label/caption maksimal setinggi ini
 LABEL_MAX_H_FILLED = 0.12 # ... kecuali bilah berwarna (caption grafik panjang)
 LABEL_MAX_CHARS = 260
+CAPTION_MAX_CHARS = 140   # judul panel huruf campuran (tebal, di atas bilah berwarna) paling panjang segini
 NOTE_MIN_Y = 0.9          # teks yang mulai di bawah ini = catatan kaki
 STICKER_MAX_W = 0.12      # teks kecil di atas elemen lain ("Tindak Lanjut", "UPDATED") = stiker, dibuang
 PANEL_MIN_AREA = 0.06     # shape latar minimal seluas ini untuk dianggap panel teks
@@ -345,15 +346,37 @@ def _inside(inner: Box, outer: Box, tol: float = 0.01) -> bool:
             and inner.y >= outer.y - tol and inner.b <= outer.b + tol)
 
 
-def _is_label(b: Box) -> bool:
+def _is_label(b: Box, on_bar: bool = False) -> bool:
     """Teks pendek, (hampir) kapital semua, tidak tinggi -> label / caption / sub-judul."""
     t = b.text
     letters = [c for c in t if c.isalpha()]
     # bilah berwarna (caption grafik) boleh lebih tinggi: caption panjang bisa sampai 4 baris
-    max_h = LABEL_MAX_H_FILLED if b.filled else LABEL_MAX_H
+    max_h = LABEL_MAX_H_FILLED if b.filled or on_bar else LABEL_MAX_H
     return (b.kind == "text" and not b.is_title and bool(t) and len(t) <= LABEL_MAX_CHARS
             and b.h <= max_h and bool(letters)
             and sum(c.isupper() for c in letters) / len(letters) > 0.8)
+
+
+def _on_bar(t: Box, boxes: list) -> bool:
+    """Teks di atas bilah berwarna: kotak teksnya sendiri berwarna, atau shape berwarna setinggi bilah
+    ada di belakangnya (bilah judul panel grafik)."""
+    return t.filled or any(s.kind == "shape" and s.filled and s.h <= LABEL_MAX_H_FILLED
+                           and _inter(t, s) > 0.5 * t.w * t.h for s in boxes)
+
+
+def _is_bold(b: Box) -> bool:
+    runs = [r for p in b.paras for r in p.runs if r[0].strip()]
+    return bool(runs) and all(r[1] for r in runs)
+
+
+def _is_caption(t: Box, boxes: list) -> bool:
+    """Calon caption gambar: label kapital, atau judul panel huruf campuran (tebal, di atas bilah berwarna,
+    mis. "Perkembangan Loan Agreement Revolving"). Teks polos di atas grafik (pesan kunci, sumber) bukan."""
+    if t.kind != "text" or t.is_title or not t.text:
+        return False
+    bar = _on_bar(t, boxes)
+    return _is_label(t, bar) or (bar and _is_bold(t) and len(t.text) <= CAPTION_MAX_CHARS
+                                 and len(t.paras) <= 2 and t.h <= LABEL_MAX_H_FILLED)
 
 
 def merge_pictures(pics: list) -> list:
@@ -597,12 +620,19 @@ def detect_diagrams(boxes: list, title: Optional[Box]) -> tuple:
 
     gfx = [b for b in boxes if (b.kind == "shape" and not is_background(b))
            or (b.kind == "picture" and b.w < ICON_MAX_W)]
-    charts = [b for b in boxes if b.kind == "picture" and b.w >= ICON_MAX_W]
-    # caption grafik (label tepat di atas grafik besar dan kurang lebih selebar grafiknya) milik grafiknya,
-    # bukan bagian diagram. Bilah yang jauh lebih sempit dari gambar di bawahnya = lapisan diagram.
+    panel_content = [b for b in boxes if (b.kind == "picture" and b.w >= ICON_MAX_W) or b.kind == "table"]
+
+    def panel_caption(b):
+        """Caption tepat di atas grafik / tabel / deretan grafik yang kurang lebih selebar caption itu: milik
+        panelnya, bukan bagian diagram. Bilah yang jauh lebih sempit dari isi di bawahnya = lapisan diagram."""
+        under = [c for c in panel_content if _h_overlap(b, c) >= 0.6 and -0.03 <= c.y - b.b <= 0.06]
+        if not under or not _is_caption(b, boxes):
+            return False
+        span = max(c.r for c in under) - min(c.x for c in under)
+        return abs(b.w - span) <= 0.25 * span
+
     shorts = [b for b in boxes if b.kind == "text" and b is not title and len(b.text) <= DIAGRAM_SHORT_CHARS
-              and not (_is_label(b) and any(_h_overlap(b, c) >= 0.6 and -0.03 <= c.y - b.b <= 0.06
-                                            and abs(b.w - c.w) <= 0.25 * c.w for c in charts))]
+              and not panel_caption(b)]
     cands = gfx + shorts
     parent = list(range(len(cands)))
 
@@ -728,10 +758,27 @@ def analyse(slide, W: int, H: int, boxes: Optional[list] = None) -> dict:
             p.y, p.h = top, bottom - top
             texts = [t for t in texts if t not in attached]
 
-    labels = [t for t in texts if _is_label(t)]
+    # calon caption: label kapital, atau judul panel tebal di atas bilah berwarna (huruf campuran)
+    labels = [t for t in texts if _is_caption(t, boxes)]
+    mixed = {id(t) for t in labels if not _is_label(t, _on_bar(t, boxes))}
+
+    def near_above(l, p):
+        return _h_overlap(l, p) >= 0.6 and -0.03 <= p.y - l.b <= 0.06
+
+    def same_width(l, p):
+        # judul panel huruf campuran harus kurang lebih selebar gambarnya: judul satu bagian di dalam
+        # diagram / panel lebar (mis. "Draft Standard Message ...") bukan caption seluruh gambar itu
+        return id(l) not in mixed or _h_overlap(l, p) * min(l.w, p.w) >= 0.6 * max(l.w, p.w)
+
+    def section_header(l, p):
+        # judul panel huruf campuran yang di bawahnya masih ada judul lain sebelum gambar = judul bagian
+        # (mis. "Kebaruan dan Konfigurasi ..." di atas "Kebaruan BI-RTGS Gen III" | "Konfigurasi ..."):
+        # tetap teks, judul-judul di bawahnya yang menjadi caption gambar masing-masing
+        return id(l) in mixed and any(t is not l and t.y >= l.b - 0.005 and t.b <= p.y + 0.01
+                                      and t.x >= l.x - 0.01 and t.r <= l.r + 0.01 for t in labels)
 
     def is_above(l, p):
-        return _h_overlap(l, p) >= 0.6 and -0.03 <= p.y - l.b <= 0.06
+        return near_above(l, p) and same_width(l, p) and not section_header(l, p)
 
     # satu caption yang menaungi beberapa grafik berdampingan -> grafik-grafik itu satu gambar dengan
     # caption tersebut; judul kecil tiap grafik (label di antara caption dan grafik) ikut ter-crop
@@ -739,7 +786,8 @@ def analyse(slide, W: int, H: int, boxes: Optional[list] = None) -> dict:
     for l in labels:
         if id(l) in used:
             continue
-        under = [p for p in pics if is_above(l, p) and p.x >= l.x - 0.02 and p.r <= l.r + 0.02]
+        under = [p for p in pics if near_above(l, p) and not section_header(l, p)
+                 and p.x >= l.x - 0.02 and p.r <= l.r + 0.02]
         if len(under) >= 2 and max(p.y for p in under) - min(p.y for p in under) < 0.05:
             x, y = min(p.x for p in under), min(p.y for p in under)
             r, btm = max(p.r for p in under), max(p.b for p in under)
@@ -769,13 +817,40 @@ def analyse(slide, W: int, H: int, boxes: Optional[list] = None) -> dict:
     for p in sorted(pics, key=lambda p: (p.y, p.x)):
         if id(p) in caps:
             continue
-        below = [l for l in labels if id(l) not in used and _h_overlap(l, p) >= 0.6
+        below = [l for l in labels if id(l) not in used and _h_overlap(l, p) >= 0.6 and same_width(l, p)
                  and -0.03 <= l.y - p.b <= 0.04 and not any(is_above(l, o) for o in pics if o is not p)]
         cap = min(below, key=lambda l: abs(l.y - p.b), default=None)
         if cap:
             caps[id(p)] = cap
             used.add(id(cap))
     figures = [(p, caps.get(id(p))) for p in sorted(pics, key=lambda p: (p.y, p.x))]
+
+    # gambar tanpa caption yang sudah berada di dalam area gambar lain tidak ditulis lagi (ikut ter-crop di
+    # sana); deretan gambar tanpa caption yang menyambung tepat di bawah gambar ber-caption dan bersama-sama
+    # hampir selebar gambar itu (grafik kedua satu panel, baris kolase tangkapan layar di bawah "Media
+    # Nasional") ikut menjadi bagian gambar itu
+    def absorb(host, parts):
+        x, y = min([host.x] + [p.x for p in parts]), min([host.y] + [p.y for p in parts])
+        host.w, host.h = max([host.r] + [p.r for p in parts]) - x, max([host.b] + [p.b for p in parts]) - y
+        host.x, host.y = x, y
+        host.images = host.images + [i for p in parts for i in p.images]
+        return [(o, c) for o, c in figures if not any(o is p for p in parts)]
+
+    changed = True
+    while changed:
+        changed = False
+        for host, cap in figures:
+            inner = [p for p, c in figures if c is None and p is not host and host.w * host.h > p.w * p.h
+                     and _inter(p, host) > 0.8 * p.w * p.h]
+            row = [p for p, c in figures if cap is not None and c is None and p is not host
+                   and p.x >= host.x - 0.02 and p.r <= host.r + 0.02 and -0.06 <= p.y - host.b <= 0.02 < p.b - host.b]
+            if not (row and max(p.r for p in row) - min(p.x for p in row) >= 0.6 * host.w):
+                row = []
+            row = [p for p in row if not any(p is q for q in inner)]
+            if inner or row:
+                figures = absorb(host, inner + row)
+                changed = True
+                break
 
     # panel grafik: teks pendek di dalam lebar caption, di antara caption dan grafik (judul grafik),
     # ikut ter-crop bersama grafiknya
