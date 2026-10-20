@@ -60,7 +60,9 @@ DEFAULT_SECTIONS = [
 TAG_RE = re.compile(r"(?:\bSEC[:=_\-\s]*|\[\[)\s*(\d+(?:\.\d+)*)\s*(?:\]\])?", re.IGNORECASE)
 STEPS = ["Merender slide PPT", "Menyusun layout dengan report engine (tanpa LLM)",
          "Memetakan slide ke section Predefine", "Membuat konten CKEditor"]
+STEP_LLM = "Menyusun layout: aturan + LLM untuk slide bertanda"   # langkah 2 pada mode perbaikan otomatis
 WEIGHTS = (0.2, 0.55, 0.1, 0.15)
+CONVERT_MODES = ("manual", "llm")   # manual: aturan saja, slide bertanda diperbaiki di review; llm: planner auto
 
 # tanda report engine (rules_flags) -> (kenapa perlu dicek, prompt AI yang disarankan)
 FLAG_INFO = {
@@ -80,8 +82,10 @@ FLAG_INFO = {
     "colour_table": ("Ada tabel yang maknanya di warna sel (mis. Gantt / timeline).",
                      "Tabel ini bermakna lewat warna sel (Gantt/timeline): jadikan satu gambar selebar halaman, "
                      "bukan tabel teks."),
+    # tanda dari LLM pada mode perbaikan otomatis (tanpa saran prompt)
+    "llm_failed": ("LLM gagal menyusun ulang slide ini saat konversi; hasil aturan dipakai.", ""),
+    "llm_fixed": ("Jawaban pertama LLM ditolak validasi; hasil perbaikannya dipakai.", ""),
 }
-FIX_STATES = ("manual", "ai", "ok")
 
 
 # ------------------------------------------------------------------ sections
@@ -221,7 +225,8 @@ def report_fragments(job_id, out_dir, rel):
     for s in review["slides"]:
         frag = s["html"].replace('src="media/', prefix)
         out[s["n"]] = {"auto": frag, "html": frag, "kind": s["kind"], "flags": s["flags"],
-                       "title": titles.get(s["n"], ""), "fix": None}
+                       "title": titles.get(s["n"], ""),
+                       "fix": "ai" if s.get("source") in ("llm", "cache") else None}   # diperbaiki LLM saat konversi
     return out
 
 
@@ -231,7 +236,7 @@ def flag_list(codes):
 
 def recommended_prompt(codes):
     """Prompt AI yang disarankan untuk slide bertanda: gabungan saran per tanda."""
-    lines = [FLAG_INFO[c][1] for c in codes if c in FLAG_INFO]
+    lines = [FLAG_INFO[c][1] for c in codes if c in FLAG_INFO and FLAG_INFO[c][1]]
     return "\n".join(lines) or "Perbaiki susunan slide ini supaya urutan dan pengelompokan isinya sesuai slide asli."
 
 
@@ -311,7 +316,7 @@ def register(app, work_dir):
         j = dict(id=job_id, source=source, dir=d, src=Path(src), slides=slides, toc=toc, status="uploaded",
                  done=0, total=len(slides), pct=0, phase=0, steps=[{"t": t, "state": "wait"} for t in STEPS],
                  html="", error=None, render="running", render_done=threading.Event(), results={}, ai={},
-                 lock=threading.Lock())
+                 lock=threading.Lock(), mode="manual", llm_failed=[])
         j["mapping"] = do_map(j)
         jobs[job_id] = j
         threading.Thread(target=_render_bg, args=(j,), daemon=True).start()
@@ -374,11 +379,17 @@ def register(app, work_dir):
 
     @bp.post("/convert/<job_id>")
     def convert(job_id):
+        """mode: manual (aturan saja, tanpa LLM; slide bertanda diperbaiki di review) | llm (LLM menyusun ulang
+        slide bertanda saat konversi, memakai kuota LLM)."""
         j = get_job(job_id)
         if j["status"] == "running":
             return jsonify(id=job_id, status="running")
-        j.update(status="running", done=0, pct=0, phase=0, html="", error=None,
-                 steps=[{"t": t, "state": "wait"} for t in STEPS])
+        mode = (request.get_json(force=True, silent=True) or {}).get("mode", "manual")
+        if mode not in CONVERT_MODES:
+            return jsonify(error="mode tidak dikenal."), 400
+        steps = [STEP_LLM if mode == "llm" and i == 1 else t for i, t in enumerate(STEPS)]
+        j.update(status="running", done=0, pct=0, phase=0, html="", error=None, mode=mode, llm_failed=[],
+                 steps=[{"t": t, "state": "wait"} for t in steps])
         threading.Thread(target=_run, args=(j,), daemon=True).start()
         return jsonify(id=job_id, status="running")
 
@@ -400,16 +411,18 @@ def register(app, work_dir):
             j["render_done"].wait(timeout=900)
             tick(0, total)
 
-            # 2. report engine, aturan saja (tanpa LLM), memakai render yang sama
+            # 2. report engine memakai render yang sama: aturan saja, atau + LLM untuk slide bertanda
             def on_progress(fraction, _message):
                 tick(1, min(total, max(0, round((fraction - 0.3) / 0.7 * total))))
 
             rendered = j["render"] == "done"
             out = j["dir"] / "report"
-            report_engine.convert_report(
-                j["src"], out / (Path(j["source"]).stem + ".docx"), planner="rules", render=rendered,
+            stats = report_engine.convert_report(
+                j["src"], out / (Path(j["source"]).stem + ".docx"),
+                planner="auto" if j["mode"] == "llm" else "rules", render=rendered,
                 work_dir=out, slides_dir=j["dir"] / "slides" if rendered else None, progress=on_progress)
             j["results"], j["ai"] = report_fragments(j["id"], out, "report"), {}
+            j["llm_failed"] = stats["llm_failed"]
             tick(1, total)
 
             j["mapping"] = do_map(j)
@@ -435,7 +448,7 @@ def register(app, work_dir):
         if j["status"] != "done":
             return jsonify(error="Konversi belum selesai."), 409
         slides = [_public_slide(s, j["mapping"], j["results"]) for s in j["slides"]]
-        return jsonify(html=j["html"], slides=slides, render=j["render"],
+        return jsonify(html=j["html"], slides=slides, render=j["render"], mode=j["mode"], llm_failed=j["llm_failed"],
                        docx=(j["dir"] / "report" / (Path(j["source"]).stem + ".docx")).exists())
 
     # ---- review: perbaiki slide bertanda (manual / AI / tandai OK / kembalikan hasil otomatis)
