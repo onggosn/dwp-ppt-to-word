@@ -333,25 +333,15 @@ def register(app, work_dir):
         return dict(exists=True, id=j["id"], source=j["source"], toc=j["toc"], render=j["render"],
                     status=j["status"], slides=[_public_slide(s, j["mapping"]) for s in j["slides"]])
 
-    # Mockup OneDrive: satu dokumen aktif, disimpan di work/onedrive supaya bertahan antar refresh/restart.
-    # Prototipe: "Generate PPT" = pengguna mengunggah PPT; nama aslinya disimpan di source.txt.
+    # Mockup OneDrive: work/onedrive. Prototipe: "Generate PPT" = pengguna mengunggah PPT.
     drive = work / "onedrive"
-    drive_file = drive / MOCK_NAME
-    drive_name = drive / "source.txt"
     current = {"id": None}
-
-    def source_name():
-        return drive_name.read_text(encoding="utf-8").strip() if drive_name.exists() else MOCK_NAME
 
     @bp.get("/ppt")
     def ppt_state():
+        """Dokumen aktif sesi server ini (untuk kembali ke posisi terakhir setelah refresh). PPT lama di
+        'OneDrive' tidak dibuka otomatis: tab PPT selalu meminta generate (unggah) PPT."""
         j = jobs.get(current["id"])
-        if not j and drive_file.exists():
-            try:
-                j = make_job(drive_file, source_name(), load_sections())
-            except Exception as e:
-                return jsonify(error=f"PPTX tidak dapat dibaca: {e}"), 500
-            current["id"] = j["id"]
         return jsonify(payload(j) if j else {"exists": False})
 
     @bp.post("/upload")
@@ -361,17 +351,22 @@ def register(app, work_dir):
         if not f or not f.filename.lower().endswith(".pptx"):
             return jsonify(error="Pilih file .pptx."), 400
         drive.mkdir(parents=True, exist_ok=True)
-        tmp = drive / (MOCK_NAME + ".upload")
-        f.save(tmp)
+        # nama unik: PPT sebelumnya bisa masih dibuka render latar belakang job lama
+        dest = drive / f"{uuid.uuid4().hex[:8]}_{MOCK_NAME}"
+        f.save(dest)
         try:
-            Presentation(str(tmp))          # file rusak / bukan PPTX -> PPT lama tetap dipakai
+            Presentation(str(dest))          # file rusak / bukan PPTX -> ditolak, dokumen aktif tidak berubah
         except Exception as e:
-            tmp.unlink(missing_ok=True)
+            dest.unlink(missing_ok=True)
             return jsonify(error=f"PPTX tidak dapat dibaca: {e}"), 400
-        os.replace(tmp, drive_file)
-        drive_name.write_text(Path(f.filename).name, encoding="utf-8")
+        for old in drive.glob(f"*_{MOCK_NAME}"):
+            if old != dest:
+                try:
+                    old.unlink()
+                except OSError:
+                    pass                     # masih dipakai render; terhapus pada unggahan berikutnya
         try:
-            j = make_job(drive_file, Path(f.filename).name, load_sections())
+            j = make_job(dest, Path(f.filename).name, load_sections())
         except Exception as e:
             return jsonify(error=f"PPTX tidak dapat dibaca: {e}"), 400
         current["id"] = j["id"]

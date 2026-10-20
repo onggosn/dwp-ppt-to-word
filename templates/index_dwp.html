@@ -497,8 +497,8 @@
                             <div class="ed-card">
                                 <div id="pptView">
                                     <div class="ppt-empty" id="pptEmpty" hidden>
-                                        <b>PPT belum ada</b>
-                                        <p>Dokumen ini belum memiliki file PPT di OneDrive. Generate PPT dari template section agar bisa mulai diedit.</p>
+                                        <b id="genTitle">PPT belum ada</b>
+                                        <p id="genText">Dokumen ini belum memiliki file PPT di OneDrive. Generate PPT dari template section agar bisa mulai diedit.</p>
                                         <div class="drop gen-drop" id="genDrop" tabindex="0" role="button" aria-label="Generate PPT: pilih file PPTX">
                                             <strong>Generate PPT dari template section</strong>
                                             <span>Prototipe: seret file .pptx ke sini atau klik untuk memilih. PPT langsung dikonversi ke CKEditor (report engine, tanpa LLM).</span>
@@ -756,6 +756,7 @@
 
         let cur = 2, mode = 'ppt', converting = false, timerConv = null, ckReady = false;
         let jobId = null, ckHtml = '', pptExists = false;
+        let pptAsk = true;   // tab PPT selalu meminta generate (unggah) PPT; pratinjau hanya selama konversi PPT baru
         let RENDER = 'unavailable', renderTimer = null, CHECK = [];   // CHECK: slide yang ditandai perlu dicek
         const METHOD = {
             tag: 'Berdasarkan tag SEC pada objek / catatan PPT.',
@@ -837,8 +838,13 @@
             $('modeCk').classList.toggle('on', ck || check); $('modeCk').setAttribute('aria-pressed', ck || check);
             $('modePpt').classList.toggle('on', mode === 'ppt'); $('modePpt').setAttribute('aria-pressed', mode === 'ppt');
             $('pptView').hidden = mode !== 'ppt';
-            $('pptEmpty').hidden = pptExists;
-            $('pptReady').hidden = !pptExists;
+            const ask = !pptExists || pptAsk;
+            $('pptEmpty').hidden = !ask;
+            $('pptReady').hidden = ask;
+            $('genTitle').textContent = pptExists ? 'Generate ulang PPT' : 'PPT belum ada';
+            $('genText').textContent = pptExists
+                ? 'Dokumen ini sudah punya PPT' + (ckReady ? ' dan konten CKEditor' : '') + '. Generate ulang PPT dari template section untuk menggantinya' + (ckReady ? '; konten CKEditor dan perbaikan di review akan diganti.' : '.')
+                : 'Dokumen ini belum memiliki file PPT di OneDrive. Generate PPT dari template section agar bisa mulai diedit.';
             $('ckWrap').hidden = !ck;
             $('checkWrap').hidden = !check;
             $('btnConvert').textContent = ckReady ? 'Konversi ulang ke CKEditor' : 'Konversi ke CKEditor';
@@ -982,7 +988,7 @@
         $('modeCk').onclick = () => { mode = 'ck'; renderMode(); };
         $('btnToCk').onclick = () => { mode = 'ck'; renderMode(); };
         $('btnCheck').onclick = () => { mode = 'check'; renderMode(); };
-        $('modePpt').onclick = () => { mode = 'ppt'; renderMode(); };
+        $('modePpt').onclick = () => { mode = 'ppt'; pptAsk = true; renderMode(); };
         $('tocMin').onclick = () => { $('edBody').classList.add('toc-min'); };
         $('tocMax').onclick = () => { $('edBody').classList.remove('toc-min'); };
         $('docsToggle').onclick = () => $('toc').classList.toggle('docs-off');
@@ -1107,7 +1113,7 @@
 
         // PPT diambil dari "OneDrive" (mockup: work/onedrive di server)
         function applyPpt(d) {
-            jobId = d.id; ckHtml = ''; ckReady = false; cur = 0; pptExists = true; CHECK = []; mode = 'ppt';
+            jobId = d.id; ckHtml = ''; ckReady = false; cur = 0; pptExists = true; pptAsk = false; CHECK = []; mode = 'ppt';
             TOC = d.toc.map(n => ({ c: n.code, t: n.title, l: n.level }));
             SLIDES = d.slides.map(s => ({ n: s.n, t: s.title, b: s.lines.slice(0, 8), s: s.section, m: s.method, f: [] }));
             $('srcName').textContent = d.source + ' · ' + SLIDES.length + ' slide';
@@ -1137,7 +1143,7 @@
                 const r = await fetch('/api/ck/ppt');
                 const d = await r.json();
                 if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
-                if (d.exists) {
+                if (d.exists && (d.status === 'done' || d.status === 'running')) {
                     applyPpt(d);
                     // kembali ke posisi terakhir setelah refresh: hasil konversi / konversi yang masih berjalan
                     if (d.status === 'done') { await loadResult(); ckReady = true; CHECK = SLIDES.filter(s => s.f.length); mode = CHECK.length ? 'check' : 'ck'; render(); }

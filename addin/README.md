@@ -67,7 +67,8 @@ then rebuild the exe and run `set_ribbon.py` again. No VBA change is needed.
 - `/` and `/dwp` have an engine selector, with the report format as the default.
 - Report jobs offer DOCX and CKEditor HTML downloads.
 - `/review/<job>` shows each slide's render next to the result, with its slide type, plan source and flags.
-- `/dwp` editor tab (`ckeditor_flow.py`): "Generate PPT" is an upload for the prototype. The uploaded deck
+- `/dwp` editor tab (`ckeditor_flow.py`): "Generate PPT" is an upload for the prototype, and the PPT tab
+  always asks for it (a new upload replaces the document and its CKEditor content). The uploaded deck
   is converted straight away with the report engine (rules only, reusing the background render), mapped to
   the section tree and put into CKEditor. The review step lists the flagged slides; each can be fixed by
   hand (edit the result in place), re-planned by the LLM with a prompt prefilled from its flags, marked OK,
