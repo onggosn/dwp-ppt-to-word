@@ -29,6 +29,7 @@
         .slide.bad { border-left-color: var(--err) }
         .slide .bar { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--line); flex-wrap: wrap }
         .slide .bar h2 { font-size: 15px; margin: 0; flex: 1; min-width: 120px }
+        .slide .bar h2 small { font-size: 12px; font-weight: 400; color: var(--muted); margin-left: 6px }
         .slide .bar select, .slide .bar input { font: inherit; font-size: 13px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px }
         .slide .bar input { flex: 1; min-width: 180px; max-width: 420px }
         .btn { border: 0; border-radius: 6px; padding: 6px 14px; font: inherit; font-size: 13px; font-weight: 500; cursor: pointer; color: #fff }
@@ -83,7 +84,7 @@
         {% set l = labels.get(s.n|string) %}
         <section class="slide {{ 'ok' if l and l.verdict == 'ok' else ('bad' if l else '') }}" data-n="{{ s.n }}">
             <div class="bar">
-                <h2>Slide {{ s.n }}</h2>
+                <h2>Slide {{ s.n }}{% if s.source %}<small>{{ s.kind }} · {{ s.source }}{% set fl = s.flags|reject('equalto', s.kind)|list %}{% if fl %} · {{ fl|join(', ') }}{% endif %}</small>{% endif %}</h2>
                 <button class="btn ok" data-act="ok">OK</button>
                 <select aria-label="Jenis kesalahan">
                     {% for code, label in verdicts.items() if code != 'ok' %}

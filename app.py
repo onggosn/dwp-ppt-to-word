@@ -83,7 +83,7 @@ def run_layout_job(job_id, pptx: Path, provider, model, use_llm, include_hidden=
 
 
 def run_report_job(job_id, pptx: Path, provider, model, use_llm, include_hidden=False):
-    """Report engine: render -> rencana aturan -> [LLM untuk slide dense/bertanda] -> DOCX format laporan."""
+    """Report engine: render -> rencana aturan -> [LLM untuk slide dense/bertanda] -> DOCX + HTML format laporan."""
     job = JOBS[job_id]
     # batas progress (lihat report_engine.convert_report) -> indeks langkah di UI
     bounds = [0.3] + ([0.35, 0.88] if use_llm else [0.88]) + [1.01]
@@ -94,11 +94,13 @@ def run_report_job(job_id, pptx: Path, provider, model, use_llm, include_hidden=
     try:
         job["status"] = "running"
         docx_path = WORK / job_id / f"{pptx.stem}.docx"
+        html_path = WORK / job_id / f"{pptx.stem}.html"
         stats = report_engine.convert_report(
-            pptx, docx_path, planner="auto" if use_llm else "rules", provider=provider, model=model,
+            pptx, docx_path, html_path, planner="auto" if use_llm else "rules", provider=provider, model=model,
             work_dir=WORK / job_id / "build", progress=on_progress, include_hidden=include_hidden,
         )
-        job.update(status="done", step=len(job["steps"]), file=str(docx_path), name=docx_path.name, stats=stats)
+        job.update(status="done", step=len(job["steps"]), file=str(docx_path), name=docx_path.name,
+                   html=str(html_path), stats=stats)
     except Exception as e:
         traceback.print_exc()
         job.update(status="error", error=str(e))
@@ -137,7 +139,7 @@ def convert():
         steps = ["Render slides with PowerPoint", "Plan slide layout with rules"]
         if use_llm:
             steps.append("Re-plan complex slides with LLM")
-        steps.append("Write Word document")
+        steps.append("Write Word document and CKEditor HTML")
         JOBS[job_id] = dict(id=job_id, status="queued", step=0, source=f.filename, steps=steps,
                             llm_step=-1, llm_chars=0, engine="report")
         include_hidden = request.form.get("include_hidden", "false") == "true"

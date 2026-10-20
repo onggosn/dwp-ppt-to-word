@@ -390,6 +390,15 @@
                                 <span>Maksimal satu file per konversi</span>
                                 <input type="file" id="file" accept=".pptx,.pdf" hidden>
                             </div>
+                            <div class="row">
+                                <div>
+                                    <label for="engine">Mesin konversi (PPTX)</label>
+                                    <select id="engine">
+                                        <option value="report">Format laporan (aturan + LLM untuk slide kompleks)</option>
+                                        <option value="layout">Layout engine (berbasis aturan, tanpa LLM)</option>
+                                    </select>
+                                </div>
+                            </div>
                             <label class="chk"><input type="checkbox" id="inclhidden"> Ikutkan slide yang disembunyikan (hidden)</label>
                             <label class="chk"><input type="checkbox" id="usellm"> <span id="llmlabel">Gunakan LLM untuk merapikan teks (opsional)</span></label>
                             <div id="llmopts" hidden>
@@ -585,24 +594,28 @@
         drop.addEventListener('drop', e => { if (e.dataTransfer.files[0]) { file.files = e.dataTransfer.files; picked(); } });
         file.onchange = picked;
         function picked() { const f = file.files[0]; if (!f) return; $('fname').textContent = f.name; ready(); }
-        // PPTX: layout engine (tanpa LLM; LLM opsional hanya merapikan teks).
-        // PDF: tetap Docling + LLM layout, butuh HTML referensi.
+        // PPTX: report engine (aturan; LLM opsional menyusun ulang slide kompleks) atau layout engine
+        // (tanpa LLM; LLM opsional hanya merapikan teks). PDF: tetap Docling + LLM layout, butuh HTML referensi.
         const isPdf = () => { const f = file.files[0]; return !!(f && /\.pdf$/i.test(f.name)); };
         function ready() {
             const f = file.files[0], r = $('ref').files[0], pdf = isPdf();
-            $('llmlabel').textContent = pdf ? 'Gunakan LLM untuk merapikan layout (PDF)' : 'Gunakan LLM untuk merapikan teks (opsional)';
+            $('llmlabel').textContent = pdf ? 'Gunakan LLM untuk merapikan layout (PDF)'
+                : $('engine').value === 'report' ? 'Gunakan LLM untuk slide kompleks (disarankan)' : 'Gunakan LLM untuk merapikan teks (opsional)';
+            $('engine').disabled = pdf;
             $('llmopts').hidden = !$('usellm').checked;
             $('refbox').hidden = !pdf;
             go.disabled = !(f && /\.(pptx|pdf)$/i.test(f.name) && (!pdf || !$('usellm').checked || r));
         }
         $('ref').onchange = ready;
         $('usellm').onchange = ready;
+        $('engine').onchange = ready;
+        ready();   // label LLM sesuai mesin default
         $('provider').onchange = e => { $('model').value = e.target.value === 'gemini' ? 'gemini-3.8-flash' : 'qwen2.5-coder:7b'; };
 
         go.onclick = async () => {
             const fd = new FormData();
             fd.append('pptx', file.files[0]);
-            fd.append('engine', 'layout');
+            fd.append('engine', $('engine').value);
             fd.append('include_hidden', $('inclhidden').checked);
             fd.append('use_llm', $('usellm').checked);
             fd.append('provider', $('provider').value);
@@ -634,7 +647,7 @@
                     if (!running) return '<li class="' + cls + '"><span class="dot"></span><span>' + t + '</span></li>';
                     let detail = 'Sedang berjalan...';
                     if (i === j.llm_step) detail = j.llm_chars > 0 ? 'Menerima respons... ' + j.llm_chars.toLocaleString() + ' karakter' : 'Menunggu model mulai merespons...';
-                    else if (i === 0 && secs > 15) detail = j.engine === 'layout' ? 'Masih merender slide dengan PowerPoint.' : 'Masih membaca. Pada eksekusi pertama, Docling mungkin mengunduh model.';
+                    else if (i === 0 && secs > 15) detail = ['layout', 'report'].includes(j.engine) ? 'Masih merender slide dengan PowerPoint.' : 'Masih membaca. Pada eksekusi pertama, Docling mungkin mengunduh model.';
                     return '<li class="run"><span class="dot"></span><span>' + t + '<span class="meta">' + elapsed + '</span>' +
                         '<span class="bar"><i></i></span><span class="detail">' + detail + '</span></span></li>';
                 }).join('');

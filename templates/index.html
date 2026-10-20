@@ -620,6 +620,7 @@
         $('ref').onchange = ready;
         $('usellm').onchange = ready;
         $('engine').onchange = ready;
+        ready();   // label LLM sesuai mesin default
         $('provider').onchange = e => { $('model').value = e.target.value === 'gemini' ? 'gemini-3.8-flash' : 'qwen2.5-coder:7b' };
 
         go.onclick = async () => {

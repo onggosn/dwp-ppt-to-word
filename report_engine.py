@@ -10,12 +10,15 @@ Alur:
                LLM mengembalikan rencana dengan skema yang sama. LLM tidak pernah menulis teks, jadi angka
                tidak bisa berubah. Rencana LLM divalidasi (id ada, tidak dobel, teks penting tidak hilang);
                gagal -> rencana aturan dipakai. Rencana LLM disimpan di cache per isi slide.
-  4. write     rencana -> DOCX (report_writer). Format selalu sama, berapapun sumber rencananya.
+  4. write     rencana -> DOCX (report_writer), dan opsional HTML untuk CKEditor dengan format yang sama.
+               Format selalu sama, berapapun sumber rencananya.
 
-Rencana semua slide ditulis ke <work>/plans.json (untuk dicek dan untuk evaluate.py).
+Rencana semua slide ditulis ke <work>/plans.json (untuk dicek dan untuk evaluate.py), dan per slide render
++ HTML hasil ke <work>/review.json (halaman /review, sama seperti layout_engine).
 
 CLI:
     python report_engine.py docs/test3.pptx -o work/test3_report.docx
+    python report_engine.py docs/test3.pptx -o work/test3_report.docx --html work/test3_report.html
     python report_engine.py docs/test2.pptx -o work/test2_report.docx --planner rules   # tanpa LLM
     python report_engine.py docs/test3.pptx -o work/test3_llm.docx --planner llm        # semua slide ke LLM
 """
@@ -37,7 +40,7 @@ from PIL import Image
 from pptx import Presentation
 
 import layout_engine as le
-from report_writer import DEFAULT_TEMPLATE, DOC_TITLE, ReportWriter
+from report_writer import DEFAULT_TEMPLATE, DOC_TITLE, HtmlReportWriter, ReportWriter, Tee
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_CACHE = HERE / "work" / "plan_cache"
@@ -571,17 +574,27 @@ def write_slide(w: ReportWriter, sp: SlidePlan, crop, media_dir: Path):
     w.figures(figures)
 
 
-def write_report(slides: list, docx_path: Path, template: Path, render_dir: Optional[Path], media_dir: Path):
-    w = ReportWriter(template)
+def write_report(slides: list, docx_path: Path, template: Path, render_dir: Optional[Path], media_dir: Path,
+                 html_path: Optional[Path] = None) -> dict:
+    """DOCX, dan HTML CKEditor kalau html_path diisi (gambar base64). Hasil: {nomor slide: fragmen HTML}
+    untuk halaman review, dengan gambar dirujuk relatif ("media/<nama>")."""
+    docx, page = ReportWriter(template), HtmlReportWriter() if html_path else None
+    w = Tee(docx, page)
     content = [sp for sp in slides if sp.kind not in ("cover", "closing")]
     cover = next((sp for sp in slides if sp.kind == "cover"), None)
     deck_title = slide_title(cover or (content[0] if content else slides[0])) if slides else ""
     # w.header(deck_title)
     w.title(deck_title)
+    fragments = {}
     for sp in content:
         render_png = render_dir / f"slide{sp.n}.png" if render_dir else None
-        write_slide(w, sp, le.make_cropper(render_png, media_dir, sp.n), media_dir)
-    w.save(docx_path)
+        review = HtmlReportWriter(img_src=lambda p: f"media/{p.name}")
+        write_slide(Tee(docx, page, review), sp, le.make_cropper(render_png, media_dir, sp.n), media_dir)
+        fragments[sp.n] = review.fragment()
+    docx.save(docx_path)
+    if page:
+        page.save(html_path, deck_title)
+    return fragments
 
 
 # --------------------------------------------------------------------------- orkestrasi
@@ -596,6 +609,7 @@ def plans_json(slides: list) -> list:
 def convert_report(
     pptx_path,
     docx_path,
+    html_path=None,
     planner: str = "auto",
     provider: str = "gemini",
     model: str = DEFAULT_MODEL,
@@ -609,6 +623,7 @@ def convert_report(
     only: Optional[set] = None,
 ) -> dict:
     """planner: rules (tanpa LLM) | auto (LLM hanya untuk slide dense/bertanda) | llm (semua slide isi).
+    html_path: kalau diisi, juga menulis HTML mandiri untuk CKEditor dengan format yang sama.
     only: nomor slide yang dikonversi (untuk mencoba ulang slide tertentu); None = semua."""
     if planner not in ("rules", "auto", "llm"):
         raise ValueError(f"planner tidak dikenal: {planner}")
@@ -668,10 +683,20 @@ def convert_report(
     for sp in slides:
         sp.plan = attach_icons(drop_boilerplate(sp.plan, sp.els, labels), sp.els)
 
-    progress(0.88, "Menulis dokumen Word")
-    write_report(slides, docx_path, Path(template), render_dir if rendered else None, media_dir)
+    progress(0.88, "Menulis dokumen Word" + (" dan HTML" if html_path else ""))
+    fragments = write_report(slides, docx_path, Path(template), render_dir if rendered else None, media_dir,
+                             Path(html_path) if html_path else None)
     plans_path = work / "plans.json"
     plans_path.write_text(json.dumps(plans_json(slides), ensure_ascii=False, indent=1), encoding="utf-8")
+
+    # bahan halaman review (/review): render asli + HTML hasil per slide, sama seperti layout_engine
+    written = [sp for sp in slides if sp.n in fragments]
+    if rendered:
+        le.write_previews(render_dir, [sp.n for sp in written])
+    review = {"source": pptx_path.name, "rendered": rendered, "skipped": skipped, "slides": [
+        {"n": sp.n, "render": f"slides/preview{sp.n}.jpg" if rendered else None, "html": fragments[sp.n],
+         "kind": sp.kind, "source": sp.source, "flags": sp.flags} for sp in written]}
+    (work / "review.json").write_text(json.dumps(review, ensure_ascii=False), encoding="utf-8")
 
     progress(1.0, "Selesai")
     sources = Counter(sp.source for sp in slides)
@@ -683,7 +708,8 @@ def convert_report(
         "llm_failed": [sp.n for sp in slides if "llm_failed" in sp.flags],
         "seconds": {"render": round(t_render - t0, 1), "rules": round(t_plan - t_render, 1),
                     "llm": round(t_llm - t_plan, 1), "write": round(time.time() - t_llm, 1)},
-        "docx": str(docx_path), "plans": str(plans_path),
+        "docx": str(docx_path), "html": str(html_path) if html_path else None, "plans": str(plans_path),
+        "review": str(work / "review.json"),
     }
 
 
@@ -691,6 +717,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="PPTX -> DOCX format laporan (aturan + LLM untuk slide sulit)")
     ap.add_argument("pptx")
     ap.add_argument("-o", "--output", default="Report_Output.docx")
+    ap.add_argument("--html", default=None, help="juga tulis HTML mandiri untuk CKEditor ke path ini")
     ap.add_argument("--planner", choices=["auto", "rules", "llm"], default="auto",
                     help="auto: LLM hanya untuk slide dense/bertanda (default); rules: tanpa LLM; llm: semua slide")
     ap.add_argument("--provider", choices=["gemini", "ollama"], default="gemini")
@@ -703,7 +730,7 @@ if __name__ == "__main__":
     ap.add_argument("--include-hidden", action="store_true", help="ikut konversi slide yang di-hide")
     ap.add_argument("--slides", default=None, help="hanya slide ini, mis. 5,12,30 (untuk mencoba ulang)")
     a = ap.parse_args()
-    stats = convert_report(a.pptx, a.output, planner=a.planner, provider=a.provider, model=a.model,
+    stats = convert_report(a.pptx, a.output, a.html, planner=a.planner, provider=a.provider, model=a.model,
                            render=not a.no_render, work_dir=a.work_dir, template=a.template,
                            include_hidden=a.include_hidden, cache_dir=None if a.no_cache else DEFAULT_CACHE,
                            workers=a.workers, progress=lambda f, m: print(f"[{f:4.0%}] {m}"),

@@ -9,13 +9,19 @@ Format:
   - gambar: satu tabel per slide, satu baris per gambar: gambar | keterangan (ikon: kolom 900 twips;
     grafik: 60/40); gambar lebar (diagram padat, tabel Gantt) selebar tabel dengan keterangan di bawahnya
 
+HtmlReportWriter menulis format yang sama sebagai HTML bersih untuk CKEditor (h1/h2, p, ul/ol, table);
+Tee meneruskan panggilan yang sama ke beberapa writer, jadi DOCX dan HTML selalu berisi hal yang sama.
+
 Template dibuat ulang dari contoh hasil yang benar kalau formatnya berubah:
     python report_writer.py --make-template docs/test3.docx
 """
 from __future__ import annotations
 
 import argparse
+import base64
+import html
 from pathlib import Path
+from typing import Callable
 
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -336,6 +342,181 @@ class ReportWriter:
     def save(self, path: Path):
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         self.doc.save(str(path))
+
+
+# --------------------------------------------------------------------------- HTML (CKEditor)
+FIG_PCT = tuple(round(100 * c / TEXT_W) for c in FIG_COLS)      # 60 / 40
+ICON_PCT = tuple(round(100 * c / TEXT_W) for c in ICON_COLS)    # 10 / 90
+ICON_PX = round(ICON_IMG_W / 914400 * 96)                       # 0,5" pada 96 dpi
+_HTML_TABLE = '<table border="1" style="border-collapse:collapse;width:100%"><tbody>'
+_HTML_OL_TYPE = {"lowerLetter": "a", "upperLetter": "A", "lowerRoman": "i", "upperRoman": "I"}
+
+
+def img_data_uri(path: Path) -> str:
+    ext = path.suffix.lower().lstrip(".")
+    mime = "image/" + {"jpg": "jpeg"}.get(ext, ext)
+    return f"data:{mime};base64," + base64.b64encode(path.read_bytes()).decode()
+
+
+def _runs_html(runs: list) -> str:
+    out = []
+    for text, b, i in runs:
+        s = html.escape(text)
+        if i:
+            s = f"<i>{s}</i>"
+        if b:
+            s = f"<strong>{s}</strong>"
+        out.append(s)
+    return "".join(out)
+
+
+def html_document(fragment: str, title: str) -> str:
+    return (f'<!DOCTYPE html>\n<html lang="id"><head><meta charset="UTF-8"><title>{html.escape(title)}</title>'
+            f"<style>body{{font-family:'{FONT}',Arial,sans-serif;font-size:11pt;max-width:900px;margin:20px auto;"
+            "line-height:1.4}td{vertical-align:middle;padding:6px}</style></head>\n<body>\n"
+            f"{fragment}\n</body></html>\n")
+
+
+class HtmlReportWriter:
+    """Format laporan yang sama dengan ReportWriter, sebagai fragmen HTML tanpa class untuk CKEditor.
+    img_src: path gambar -> src (default base64, jadi file HTML-nya mandiri)."""
+
+    def __init__(self, img_src: Callable[[Path], str] = img_data_uri):
+        self.img_src = img_src
+        self.out = []
+        self._lists = []          # tag list yang terbuka per level: "ul" / "ol" / 'ol type="a"'
+        self._base = 0            # level PPT item pertama list = level 0 HTML
+
+    # ------------------------------------------------------------------ list (bullet / nomor)
+    def _close(self, depth: int) -> str:
+        s = ""
+        while len(self._lists) > depth:
+            s += f"</li></{self._lists.pop().split()[0]}>"
+        return s
+
+    def end_list(self):
+        if self._lists:
+            self.out.append(self._close(0))
+
+    def _item(self, tag: str, level: int) -> str:
+        """Penutup / pembuka list sebelum <li> baru. Level relatif terhadap item pertama dan paling banyak
+        satu level lebih dalam dari list yang terbuka, supaya setiap sub-list ada di dalam <li> induknya."""
+        if not self._lists:
+            self._base = level
+        lvl = min(max(level - self._base, 0), len(self._lists))
+        s = self._close(lvl + 1)
+        if len(self._lists) == lvl + 1 and self._lists[lvl] != tag:   # jenis list berganti -> list baru
+            s += self._close(lvl)
+        if len(self._lists) == lvl + 1:
+            s += "</li>"
+        else:
+            s += f"<{tag}>"
+            self._lists.append(tag)
+        return s + "<li>"
+
+    def rich(self, runs: list, kind: str = "para", bullet: bool = False, numbered: bool = False,
+             level: int = 0, num_fmt: str = "decimal"):
+        if bullet:
+            tag = "ul" if not numbered else (
+                f'ol type="{_HTML_OL_TYPE[num_fmt]}"' if num_fmt in _HTML_OL_TYPE else "ol")
+            self.out.append(self._item(tag, level) + _runs_html(runs))
+        else:
+            self._p(_runs_html(runs))
+
+    # ------------------------------------------------------------------ paragraf
+    def _p(self, inner: str, tag: str = "p"):
+        self.end_list()
+        self.out.append(f"<{tag}>{inner}</{tag.split()[0]}>")
+
+    def header(self, text: str):
+        pass                      # HTML tidak punya header halaman
+
+    def title(self, title: str, subtitle: str = ""):
+        self._p(f"<strong>{html.escape(title)}</strong>", f'p style="font-size:{PARA["title"]["size"]}pt"')
+        if subtitle:
+            self._p(html.escape(subtitle))
+
+    def heading(self, text: str, level: int):
+        self._p(html.escape(text), {1: "h1", 2: "h2"}.get(level, "p"))
+
+    def label(self, text: str):
+        self._p(html.escape(text))
+
+    def para(self, text: str):
+        self._p(html.escape(text))
+
+    def note(self, text: str):
+        self._p(f"<small>{html.escape(text)}</small>")
+
+    def figures_label(self):
+        self._p(html.escape(FIGURES_LABEL))
+
+    def spacer(self):
+        pass
+
+    # ------------------------------------------------------------------ tabel
+    def figures(self, items: list):
+        """Sama dengan ReportWriter.figures: satu tabel per slide, gambar | keterangan; wide = colspan."""
+        if not items:
+            return
+        pct = ICON_PCT if all(layout == "icon" for _, _, layout in items) else FIG_PCT
+        shade = f"background:#{CAPTION_FILL}"
+        rows = []
+        for img, caption, layout in items:
+            src = html.escape(self.img_src(Path(img)))
+            cap = html.escape(caption)
+            if layout == "wide":
+                rows.append(f'<tr><td colspan="2" style="text-align:center">'
+                            f'<img src="{src}" style="max-width:100%;height:auto"></td></tr>')
+                if caption:
+                    rows.append(f'<tr><td colspan="2" style="{shade}"><strong>{cap}</strong></td></tr>')
+                continue
+            icon = layout == "icon"
+            size = f'width="{ICON_PX}"' if icon else 'style="max-width:100%;height:auto"'
+            rows.append(f'<tr><td style="width:{pct[0]}%;text-align:center"><img src="{src}" {size}></td>'
+                        f'<td style="width:{pct[1]}%;{shade}">'
+                        f'{cap if icon or not cap else f"<strong>{cap}</strong>"}</td></tr>')
+        self.end_list()
+        self.out.append(_HTML_TABLE + "".join(rows) + "</tbody></table>")
+
+    def table(self, rows: list):
+        ncols = max((len(r) for r in rows), default=0)
+        if not ncols:
+            return
+        out = []
+        for i, r in enumerate(rows):
+            cells = []
+            for val in list(r) + [""] * (ncols - len(r)):
+                s = "<br>".join(html.escape(line.strip()) for line in (val or "").split("\n"))
+                if i == 0:
+                    cells.append(f'<td style="width:{100 / ncols:.0f}%;background:#{CAPTION_FILL}">'
+                                 f'{f"<strong>{s}</strong>" if s else ""}</td>')
+                else:
+                    cells.append(f"<td>{s}</td>")
+            out.append("<tr>" + "".join(cells) + "</tr>")
+        self.end_list()
+        self.out.append(_HTML_TABLE + "".join(out) + "</tbody></table>")
+
+    def fragment(self) -> str:
+        self.end_list()
+        return "\n".join(self.out)
+
+    def save(self, path: Path, title: str = ""):
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        Path(path).write_text(html_document(self.fragment(), title or Path(path).stem), encoding="utf-8")
+
+
+class Tee:
+    """Panggilan writer yang sama ke beberapa writer (DOCX, HTML, ...); None dilewati."""
+
+    def __init__(self, *writers):
+        self.writers = [w for w in writers if w is not None]
+
+    def __getattr__(self, name):
+        def call(*args, **kwargs):
+            for w in self.writers:
+                getattr(w, name)(*args, **kwargs)
+        return call
 
 
 def make_template(example: Path, out: Path = DEFAULT_TEMPLATE) -> Path:

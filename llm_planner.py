@@ -126,7 +126,7 @@ def describe(elements: list) -> str:
 
 def parse(raw: str):
     raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", (raw or "").strip())
-    data = json.loads(raw)
+    data = json.loads(raw, strict=False)   # strict=False: tab / baris baru mentah di dalam string tetap sah
     if isinstance(data, list):        # sebagian model membungkus objek dalam list
         data = data[0] if data else {}
     return sanitize(data)

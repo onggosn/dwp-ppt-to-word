@@ -1424,12 +1424,7 @@ def convert_pptx(
 
     # bahan halaman review: per slide render asli (pratinjau JPEG kecil) + HTML hasil
     if rendered:
-        for n in numbers:
-            src = render_dir / f"slide{n}.png"
-            if src.exists():
-                im = Image.open(src).convert("RGB")
-                im.thumbnail((1400, 1400))
-                im.save(render_dir / f"preview{n}.jpg", quality=80)
+        write_previews(render_dir, numbers)
     review = {"source": pptx_path.name, "rendered": rendered, "skipped": skipped, "slides": [
         {"n": n, "render": f"slides/preview{n}.jpg" if rendered else None,
          "html": blocks_to_html([blocks], img_url=lambda p: f"media/{Path(p).name}")}
@@ -1439,6 +1434,16 @@ def convert_pptx(
 
     progress(1.0, "Selesai")
     return stats
+
+
+def write_previews(render_dir: Path, numbers) -> None:
+    """Pratinjau JPEG kecil render slide (slides/preview<n>.jpg) untuk halaman review."""
+    for n in numbers:
+        src = render_dir / f"slide{n}.png"
+        if src.exists():
+            im = Image.open(src).convert("RGB")
+            im.thumbnail((1400, 1400))
+            im.save(render_dir / f"preview{n}.jpg", quality=80)
 
 
 def is_hidden(slide) -> bool:
