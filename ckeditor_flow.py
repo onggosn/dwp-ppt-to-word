@@ -65,27 +65,7 @@ WEIGHTS = (0.2, 0.55, 0.1, 0.15)
 CONVERT_MODES = ("manual", "llm")   # manual: aturan saja, slide bertanda diperbaiki di review; llm: planner auto
 
 # tanda report engine (rules_flags) -> (kenapa perlu dicek, prompt AI yang disarankan)
-FLAG_INFO = {
-    "dense": ("Slide padat (banyak teks dan objek); urutan atau pengelompokan isi bisa keliru.",
-              "Kelompokkan isi per panel/kolom dari kiri ke kanan: judul panel jadi heading, teksnya di bawahnya. "
-              "Grafik atau diagram beserta label kecilnya jadi satu gambar dengan caption-nya."),
-    "no_title": ("Judul slide tidak terdeteksi.",
-                 "Jadikan teks judul di bagian atas slide sebagai heading level 1."),
-    "uncaptioned": ("Ada beberapa gambar/grafik tanpa keterangan.",
-                    "Pasangkan setiap grafik atau gambar dengan label/bar judul tepat di atasnya sebagai caption."),
-    "dropped_text": ("Ada teks panjang yang tidak ikut ke dokumen.",
-                     "Pastikan semua kalimat di slide tetap muncul sebagai teks; jangan buang teks yang panjang."),
-    "fragments": ("Banyak potongan teks pendek, kemungkinan label diagram yang tercecer.",
-                  "Potongan teks pendek ini adalah label diagram: jadikan diagram beserta labelnya satu gambar."),
-    "duplicate_heading": ("Ada heading yang muncul dua kali.",
-                          "Tulis setiap heading sekali saja; buang heading yang dobel."),
-    "colour_table": ("Ada tabel yang maknanya di warna sel (mis. Gantt / timeline).",
-                     "Tabel ini bermakna lewat warna sel (Gantt/timeline): jadikan satu gambar selebar halaman, "
-                     "bukan tabel teks."),
-    # tanda dari LLM pada mode perbaikan otomatis (tanpa saran prompt)
-    "llm_failed": ("LLM gagal menyusun ulang slide ini saat konversi; hasil aturan dipakai.", ""),
-    "llm_fixed": ("Jawaban pertama LLM ditolak validasi; hasil perbaikannya dipakai.", ""),
-}
+FLAG_INFO = report_engine.FLAG_INFO
 
 
 # ------------------------------------------------------------------ sections

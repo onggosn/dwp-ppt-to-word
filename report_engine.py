@@ -76,6 +76,31 @@ PLANNERS = ("rules", "cached", "auto", "llm")
 
 ProgressFn = Callable[[float, str], None]
 
+# tanda slide -> (penjelasan untuk pengguna, saran prompt AI); dipakai komentar review DOCX dan halaman /dwp
+FLAG_INFO = {
+    "dense": ("Slide padat (banyak teks dan objek); urutan atau pengelompokan isi bisa keliru.",
+              "Kelompokkan isi per panel/kolom dari kiri ke kanan: judul panel jadi heading, teksnya di bawahnya. "
+              "Grafik atau diagram beserta label kecilnya jadi satu gambar dengan caption-nya."),
+    "no_title": ("Judul slide tidak terdeteksi.",
+                 "Jadikan teks judul di bagian atas slide sebagai heading level 1."),
+    "uncaptioned": ("Ada beberapa gambar/grafik tanpa keterangan.",
+                    "Pasangkan setiap grafik atau gambar dengan label/bar judul tepat di atasnya sebagai caption."),
+    "dropped_text": ("Ada teks panjang yang tidak ikut ke dokumen.",
+                     "Pastikan semua kalimat di slide tetap muncul sebagai teks; jangan buang teks yang panjang."),
+    "fragments": ("Banyak potongan teks pendek, kemungkinan label diagram yang tercecer.",
+                  "Potongan teks pendek ini adalah label diagram: jadikan diagram beserta labelnya satu gambar."),
+    "duplicate_heading": ("Ada heading yang muncul dua kali.",
+                          "Tulis setiap heading sekali saja; buang heading yang dobel."),
+    "colour_table": ("Ada tabel yang maknanya di warna sel (mis. Gantt / timeline).",
+                     "Tabel ini bermakna lewat warna sel (Gantt/timeline): jadikan satu gambar selebar halaman, "
+                     "bukan tabel teks."),
+    # tanda dari LLM pada mode perbaikan otomatis (tanpa saran prompt)
+    "llm_failed": ("LLM gagal menyusun ulang slide ini saat konversi; hasil aturan dipakai.", ""),
+    "llm_fixed": ("Jawaban pertama LLM ditolak validasi; hasil perbaikannya dipakai.", ""),
+}
+REVIEW_QUOTES = 3             # komentar review: paling banyak sekian teks yang dibuang dikutip
+REVIEW_QUOTE_CHARS = 100
+
 
 def _noop(_f: float, _m: str) -> None:
     pass
@@ -634,10 +659,35 @@ def write_slide(w: ReportWriter, sp: SlidePlan, crop, media_dir: Path):
     w.figures(figures)
 
 
+def review_notes(sp: SlidePlan) -> list:
+    """Isi komentar review Word untuk slide ini (baris per baris): apa yang diperbaiki AI dan apa yang perlu
+    dicek. Kosong = slide aman."""
+    checks = [FLAG_INFO.get(f, (f,))[0] for f in sp.flags if f != "llm_fixed"]
+    if "dropped_text" in sp.flags:
+        lost = [box_text(sp.els[k]) for k in sp.plan["drop"]
+                if sp.els[k].kind == "text" and len(box_text(sp.els[k])) >= LOST_TEXT_CHARS]
+        checks += [f"Tidak ikut: “{t[:REVIEW_QUOTE_CHARS]}{'...' if len(t) > REVIEW_QUOTE_CHARS else ''}”"
+                   for t in lost[:REVIEW_QUOTES]]
+    if sp.kind == "infographic":
+        checks.append("Slide infografis ditulis sebagai satu gambar; judul dan pesan kunci tetap teks. "
+                      "Pastikan gambarnya terbaca.")
+    if sp.source in ("llm", "cache"):
+        lines = [f"Slide {sp.n}: diperbaiki AI. Susunan slide ini dibuat ulang oleh AI; teks dan angka tetap "
+                 "dari slide asli. Cek urutan dan pengelompokan isinya."]
+        if checks:
+            lines.append("Alasan dikirim ke AI:")
+    elif checks:
+        lines = [f"Slide {sp.n}: perlu dicek."]
+    else:
+        return []
+    return lines + ["- " + c for c in checks]
+
+
 def write_report(slides: list, docx_path: Path, template: Path, render_dir: Optional[Path], media_dir: Path,
-                 html_path: Optional[Path] = None) -> dict:
+                 html_path: Optional[Path] = None, comments: bool = False) -> dict:
     """DOCX, dan HTML CKEditor kalau html_path diisi (gambar base64). Hasil: {nomor slide: fragmen HTML}
-    untuk halaman review, dengan gambar dirujuk relatif ("media/<nama>")."""
+    untuk halaman review, dengan gambar dirujuk relatif ("media/<nama>").
+    comments: versi review, DOCX diberi komentar Word per slide (review_notes)."""
     docx, page = ReportWriter(template), HtmlReportWriter() if html_path else None
     w = Tee(docx, page)
     content = [sp for sp in slides if sp.kind not in ("cover", "closing")]
@@ -649,7 +699,10 @@ def write_report(slides: list, docx_path: Path, template: Path, render_dir: Opti
     for sp in content:
         render_png = render_dir / f"slide{sp.n}.png" if render_dir else None
         review = HtmlReportWriter(img_src=lambda p: f"media/{p.name}")
+        start = docx.mark()
         write_slide(Tee(docx, page, review), sp, le.make_cropper(render_png, media_dir, sp.n), media_dir)
+        if comments:
+            docx.comment(start, review_notes(sp))
         fragments[sp.n] = review.fragment()
     docx.save(docx_path)
     if page:
@@ -683,13 +736,15 @@ def convert_report(
     only: Optional[set] = None,
     instruction: str = "",
     slides_dir=None,
+    comments: bool = False,
 ) -> dict:
     """planner: rules (tanpa LLM) | cached (rencana LLM tersimpan bila ada, sisanya aturan; tanpa panggilan LLM)
     | auto (LLM hanya untuk slide dense/bertanda) | llm (semua slide isi).
     html_path: kalau diisi, juga menulis HTML mandiri untuk CKEditor dengan format yang sama.
     only: nomor slide yang dikonversi (untuk mencoba ulang slide tertentu); None = semua.
     instruction: perintah reviewer untuk LLM (bersama only; slide terpilih selalu dikirim ke LLM).
-    slides_dir: folder render slide yang sudah ada (slideN.png dari deck yang sama), dipakai tanpa render ulang."""
+    slides_dir: folder render slide yang sudah ada (slideN.png dari deck yang sama), dipakai tanpa render ulang.
+    comments: versi review: komentar Word dari "Digital Workplace" pada slide yang perlu dicek / diperbaiki AI."""
     if planner not in PLANNERS:
         raise ValueError(f"planner tidak dikenal: {planner}")
     pptx_path, docx_path = Path(pptx_path), Path(docx_path)
@@ -764,7 +819,7 @@ def convert_report(
 
     progress(0.88, "Menulis dokumen Word" + (" dan HTML" if html_path else ""))
     fragments = write_report(slides, docx_path, Path(template), render_dir if rendered else None, media_dir,
-                             Path(html_path) if html_path else None)
+                             Path(html_path) if html_path else None, comments)
     plans_path = work / "plans.json"
     plans_path.write_text(json.dumps(plans_json(slides), ensure_ascii=False, indent=1), encoding="utf-8")
 
@@ -785,6 +840,7 @@ def convert_report(
         "flagged": n_flagged, "llm_slides": sources.get("llm", 0), "cache_hits": sources.get("cache", 0),
         "llm_fixed": [sp.n for sp in slides if "llm_fixed" in sp.flags],
         "llm_failed": [sp.n for sp in slides if "llm_failed" in sp.flags],
+        "comments": sum(1 for sp in slides if review_notes(sp)) if comments else 0,
         "seconds": {"render": round(t_render - t0, 1), "rules": round(t_plan - t_render, 1),
                     "llm": round(t_llm - t_plan, 1), "write": round(time.time() - t_llm, 1)},
         "docx": str(docx_path), "html": str(html_path) if html_path else None, "plans": str(plans_path),
@@ -809,10 +865,13 @@ if __name__ == "__main__":
     ap.add_argument("--no-render", action="store_true", help="jangan pakai PowerPoint, ambil gambar asli")
     ap.add_argument("--include-hidden", action="store_true", help="ikut konversi slide yang di-hide")
     ap.add_argument("--slides", default=None, help="hanya slide ini, mis. 5,12,30 (untuk mencoba ulang)")
+    ap.add_argument("--comments", action="store_true",
+                    help="versi review: komentar Word pada slide yang perlu dicek / diperbaiki AI")
     a = ap.parse_args()
     stats = convert_report(a.pptx, a.output, a.html, planner=a.planner, provider=a.provider, model=a.model,
                            render=not a.no_render, work_dir=a.work_dir, template=a.template,
                            include_hidden=a.include_hidden, cache_dir=None if a.no_cache else DEFAULT_CACHE,
                            workers=a.workers, progress=lambda f, m: print(f"[{f:4.0%}] {m}"),
-                           only={int(x) for x in a.slides.split(",")} if a.slides else None)
+                           only={int(x) for x in a.slides.split(",")} if a.slides else None,
+                           comments=a.comments)
     print(json.dumps(stats, ensure_ascii=False, indent=1))

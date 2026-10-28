@@ -8,6 +8,7 @@ Format:
     bullet / nomor dan levelnya jadi list Word, tebal / miring per kata tetap
   - gambar: satu tabel per slide, satu baris per gambar: gambar | keterangan (ikon: kolom 900 twips;
     grafik: 60/40); gambar lebar (diagram padat, tabel Gantt) selebar tabel dengan keterangan di bawahnya
+  - versi review (opsional): komentar Word dari "Digital Workplace" per slide (comment)
 
 HtmlReportWriter menulis format yang sama sebagai HTML bersih untuk CKEditor (h1/h2, p, ul/ol, table);
 Tee meneruskan panggilan yang sama ke beberapa writer, jadi DOCX dan HTML selalu berisi hal yang sama.
@@ -29,6 +30,7 @@ from docx.opc.constants import RELATIONSHIP_TYPE as RT
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Emu, Pt, RGBColor, Twips
+from docx.text.paragraph import Paragraph
 from PIL import Image
 
 HERE = Path(__file__).resolve().parent
@@ -47,6 +49,7 @@ WIDE_IMG_W = (TEXT_W - 200) * 635   # EMU: selebar tabel dikurangi margin sel
 MAX_IMG_H = 8 * 914400              # gambar setinggi ini atau lebih diperkecil supaya muat satu halaman
 BORDER_COLOR = "BFBFBF"
 CAPTION_FILL = "F2F6FA"
+REVIEWER, REVIEWER_INITIALS = "Digital Workplace", "DW"     # penulis komentar review di Word
 
 # jenis paragraf -> format (ukuran pt, tebal, warna, spasi twips, perataan, styleId Word)
 PARA = {
@@ -338,6 +341,26 @@ class ReportWriter:
                     if line.strip():
                         _style_run(p.add_run(line.strip()), size, i == 0)
         self.spacer()
+
+    # ------------------------------------------------------------------ komentar review
+    def mark(self) -> int:
+        """Posisi akhir isi dokumen sekarang; comment(mark, ...) menempel pada isi yang ditulis sesudahnya."""
+        return len(self.doc.element.body) - 1           # elemen terakhir body = sectPr
+
+    def comment(self, start: int, lines: list):
+        """Komentar Word dari REVIEWER pada paragraf berteks pertama sejak mark() (biasanya judul slide;
+        bisa juga di dalam tabel). Satu baris = satu paragraf komentar."""
+        if not lines:
+            return
+        for el in list(self.doc.element.body)[start:]:
+            for p_el in el.iter(qn("w:p")):
+                p = Paragraph(p_el, self.doc._body)
+                runs = [r for r in p.runs if r.text.strip()]
+                if runs:
+                    c = self.doc.add_comment(runs, lines[0], REVIEWER, REVIEWER_INITIALS)
+                    for line in lines[1:]:
+                        c.add_paragraph(line)
+                    return
 
     def save(self, path: Path):
         Path(path).parent.mkdir(parents=True, exist_ok=True)

@@ -360,7 +360,8 @@ def convert_to_word(app, ui):
 
 def _convert(copy: Path, out: Path, work: Path, progress) -> dict:
     import report_engine
-    return report_engine.convert_report(copy, out, planner="rules", work_dir=work / "build", progress=progress)
+    return report_engine.convert_report(copy, out, planner="rules", work_dir=work / "build", progress=progress,
+                                        comments=True)
 
 
 def run_with_progress(ui, job):

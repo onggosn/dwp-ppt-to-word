@@ -5,7 +5,8 @@ VBA macro (`DWPShim.bas`) that starts `DWP_Addin.exe <button id>`.
 
 Buttons: Title, Keynote, Textbox, Picture, Textbox Full, Picture Full, Remove Identifier, Ignore,
 Penyusun View / Add / Remove, AI Tagging, About, and **Convert to Word** (report engine, rules only, no LLM:
-writes `<deck>_laporan.docx` next to the deck and opens it in Word).
+writes `<deck>_laporan.docx` next to the deck and opens it in Word). The docx is the review version: each slide
+that needs checking, or that the AI re-planned, gets a Word comment from "Digital Workplace" on its heading.
 
 ## Build
 
