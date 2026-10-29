@@ -65,6 +65,26 @@ PARA = {
 }
 
 
+def review_mark(doc) -> int:
+    """Posisi akhir isi dokumen sekarang; review_comment(doc, mark, ...) menempel pada isi sesudahnya."""
+    return len(doc.element.body) - 1                    # elemen terakhir body = sectPr
+
+
+def review_comment(doc, start: int, lines: list):
+    """Komentar Word dari REVIEWER pada paragraf berteks pertama sejak mark() (biasanya judul slide; bisa juga
+    di dalam tabel). Satu baris = satu paragraf komentar."""
+    if not lines:
+        return
+    for el in list(doc.element.body)[start:]:
+        for p_el in el.iter(qn("w:p")):
+            runs = [r for r in Paragraph(p_el, doc._body).runs if r.text.strip()]
+            if runs:
+                c = doc.add_comment(runs, lines[0], REVIEWER, REVIEWER_INITIALS)
+                for line in lines[1:]:
+                    c.add_paragraph(line)
+                return
+
+
 def _el(tag: str, **attrs) -> OxmlElement:
     e = OxmlElement(tag)
     for k, v in attrs.items():
@@ -344,23 +364,10 @@ class ReportWriter:
 
     # ------------------------------------------------------------------ komentar review
     def mark(self) -> int:
-        """Posisi akhir isi dokumen sekarang; comment(mark, ...) menempel pada isi yang ditulis sesudahnya."""
-        return len(self.doc.element.body) - 1           # elemen terakhir body = sectPr
+        return review_mark(self.doc)
 
     def comment(self, start: int, lines: list):
-        """Komentar Word dari REVIEWER pada paragraf berteks pertama sejak mark() (biasanya judul slide;
-        bisa juga di dalam tabel). Satu baris = satu paragraf komentar."""
-        if not lines:
-            return
-        for el in list(self.doc.element.body)[start:]:
-            for p_el in el.iter(qn("w:p")):
-                p = Paragraph(p_el, self.doc._body)
-                runs = [r for r in p.runs if r.text.strip()]
-                if runs:
-                    c = self.doc.add_comment(runs, lines[0], REVIEWER, REVIEWER_INITIALS)
-                    for line in lines[1:]:
-                        c.add_paragraph(line)
-                    return
+        review_comment(self.doc, start, lines)
 
     def save(self, path: Path):
         Path(path).parent.mkdir(parents=True, exist_ok=True)

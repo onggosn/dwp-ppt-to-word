@@ -33,6 +33,8 @@ from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Emu, Pt
+
+from report_writer import review_comment, review_mark
 from PIL import Image
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE, PP_PLACEHOLDER
@@ -749,10 +751,15 @@ def analyse(slide, W: int, H: int, boxes: Optional[list] = None) -> dict:
 
     # label sempit yang menempel di tepi atas/bawah gambar = header kolom milik gambar itu
     # (mis. BASELINE | POTENTIAL RISK | TAIL RISK): area crop diperluas, label tidak ditulis ulang
+    def caption_of_lower(t):
+        # label tepat di atas gambar lain = caption gambar di bawahnya, bukan header gambar di atasnya
+        return any(o.y > t.b - 0.005 and _h_overlap(t, o) >= 0.6 and 0 <= o.y - t.b <= 0.06 for o in pics)
+
     for p in pics:
         attached = [t for t in texts if _is_label(t) and t.w < 0.6 * p.w
                     and t.x >= p.x - 0.01 and t.r <= p.r + 0.01
-                    and (-0.01 <= p.y - t.b <= 0.01 or -0.01 <= t.y - p.b <= 0.01)]
+                    and (-0.01 <= p.y - t.b <= 0.01
+                         or (-0.01 <= t.y - p.b <= 0.01 and not caption_of_lower(t)))]
         if attached:
             top, bottom = min([p.y] + [t.y for t in attached]), max([p.b] + [t.b for t in attached])
             p.y, p.h = top, bottom - top
@@ -782,12 +789,24 @@ def analyse(slide, W: int, H: int, boxes: Optional[list] = None) -> dict:
 
     # satu caption yang menaungi beberapa grafik berdampingan -> grafik-grafik itu satu gambar dengan
     # caption tersebut; judul kecil tiap grafik (label di antara caption dan grafik) ikut ter-crop
+    def bar_span(l):
+        # bilah berwarna di belakang caption sering sedikit lebih lebar dari kotak teksnya (ujung merah, margin)
+        bars = [s for s in boxes if s.kind == "shape" and s.filled and s.h <= LABEL_MAX_H_FILLED
+                and _inter(l, s) > 0.5 * l.w * l.h]
+        if not bars:
+            return l.x, l.r
+        x, r = min(b.x for b in bars), max(b.r for b in bars)
+        ends = [s for s in boxes if s.kind == "shape" and s.filled and s.h <= LABEL_MAX_H_FILLED
+                and abs(s.y - bars[0].y) < 0.01 and (-0.01 <= x - s.r <= 0.01 or -0.01 <= s.x - r <= 0.01)]
+        return min([x, l.x] + [e.x for e in ends]), max([r, l.r] + [e.r for e in ends])
+
     caps, used = {}, set()
     for l in labels:
         if id(l) in used:
             continue
+        lx, lr = bar_span(l)
         under = [p for p in pics if near_above(l, p) and not section_header(l, p)
-                 and p.x >= l.x - 0.02 and p.r <= l.r + 0.02]
+                 and p.x >= lx - 0.02 and p.r <= lr + 0.02]
         if len(under) >= 2 and max(p.y for p in under) - min(p.y for p in under) < 0.05:
             x, y = min(p.x for p in under), min(p.y for p in under)
             r, btm = max(p.r for p in under), max(p.b for p in under)
@@ -887,8 +906,16 @@ def analyse(slide, W: int, H: int, boxes: Optional[list] = None) -> dict:
     # kanan, supaya isi kedua panel tidak selang-seling. Panel = shape latar yang berisi >= 3 teks.
     panels = []
     frames = [s for s in boxes if s.kind == "shape" and PANEL_MIN_AREA <= s.w * s.h <= 0.5]
-    inside_of = {id(f): [t for t in subheads + bodies + notes if _inside(t, f, 0.01)] for f in frames}
-    frames = [f for f in frames if len(inside_of[id(f)]) >= 3]
+    def in_frame(t, f):
+        # teks yang sedikit melewati tepi kartu (kotak teks lebih tinggi dari bentuk kartunya) tetap miliknya
+        return _inside(t, f, 0.01) or (t.w * t.h > 0 and _inter(t, f) > 0.8 * t.w * t.h)
+
+    inside_of = {id(f): [t for t in subheads + bodies + notes if in_frame(t, f)] for f in frames}
+    # kartu berdampingan (judul + isi) cukup 2 teks; panel besar tetap perlu >= 3
+    frames = [f for f in frames if len(inside_of[id(f)]) >= 3
+              or (len(inside_of[id(f)]) == 2 and f.h <= 0.35
+                  and sum(1 for o in frames if o is not f and len(inside_of[id(o)]) == 2 and o.h <= 0.35
+                          and min(f.b, o.b) - max(f.y, o.y) > 0.5 * min(f.h, o.h)) >= 1)]
     frames = [f for f in frames if not any(o is not f and _inside(f, o, 0.005) for o in frames)]  # terluar
     row = sorted(frames, key=lambda f: f.x)
     if len(row) >= 2 and all(a.r <= b.x + 0.01 and min(a.b, b.b) - max(a.y, b.y) > 0.5 * min(a.h, b.h)
@@ -1393,6 +1420,7 @@ def tidy_text_with_llm(slides: list, provider: str, model: str, progress: Progre
     from converter import _call_llm   # import lambat: converter memuat Docling/torch
 
     stats = {"llm_items": 0, "llm_changed": 0, "llm_rejected": 0, "llm_errors": 0}
+    changed = set()           # nomor slide yang teksnya diubah LLM (untuk komentar review)
     for si, blocks in enumerate(slides, 1):
         progress(si / max(len(slides), 1), f"LLM merapikan teks slide {si} dari {len(slides)}")
         targets = []      # (holder, key) -> runs
@@ -1438,7 +1466,25 @@ def tidy_text_with_llm(slides: list, provider: str, model: str, progress: Progre
                 else:
                     holder[key] = [(new.strip(), b, i)]
                 stats["llm_changed"] += 1
+                changed.add(si)
+    stats["llm_changed_slides"] = sorted(changed)
     return stats
+
+
+def review_lines(n: int, flags: list, llm_changed: bool) -> list:
+    """Isi komentar review Word untuk slide n (sama wording-nya dengan report_engine.review_notes).
+    Kosong = slide aman."""
+    checks = [f["msg"] for f in flags]
+    if llm_changed:
+        lines = [f"Slide {n}: diperbaiki AI. Teks slide ini dirapikan oleh AI; angka tetap dari slide asli. "
+                 "Cek kembali isinya."]
+        if checks:
+            lines.append("Alasan lain yang perlu dicek:")
+    elif checks:
+        lines = [f"Slide {n}: perlu dicek."]
+    else:
+        return []
+    return lines + ["- " + c for c in checks]
 
 
 # --------------------------------------------------------------------------- orkestrasi
@@ -1454,8 +1500,11 @@ def convert_pptx(
     work_dir=None,
     progress: ProgressFn = _noop,
     include_hidden: bool = False,
+    comments: bool = False,
 ) -> dict:
     """include_hidden: ikut konversi slide yang di-hide di PowerPoint (default dilewati).
+    comments: DOCX versi review, tiap slide yang perlu dicek atau diperbaiki LLM diberi komentar Word
+    dari "Digital Workplace" (review_notes).
     Selain DOCX/HTML, menulis work_dir/review.json (per slide: render + HTML hasil) untuk halaman review."""
     pptx_path, docx_path = Path(pptx_path), Path(docx_path)
     work = Path(work_dir) if work_dir else docx_path.parent / (docx_path.stem + "_build")
@@ -1468,7 +1517,7 @@ def convert_pptx(
     progress(0.35, "Menganalisa layout slide")
     prs = Presentation(str(pptx_path))
     W, H = prs.slide_width, prs.slide_height
-    slides, numbers, skipped, n_fig = [], [], [], 0
+    slides, numbers, skipped, n_fig, flags = [], [], [], 0, []
     for n, slide in enumerate(prs.slides, 1):
         if is_hidden(slide) and not include_hidden:
             skipped.append(n)
@@ -1479,6 +1528,7 @@ def convert_pptx(
         n_fig += sum(len(b.rows) for b in blocks if b.type == "figures")
         slides.append(blocks)
         numbers.append(n)
+        flags.append(slide_flags(info, blocks))
 
     stats = {"slides": len(slides), "images": n_fig, "rendered": rendered, "hidden_skipped": skipped}
     if use_llm:
@@ -1487,8 +1537,11 @@ def convert_pptx(
 
     progress(0.85, "Menulis dokumen Word")
     w = DocxWriter(Path(template))
-    for blocks in slides:
+    for n, blocks, slide_flag in zip(numbers, slides, flags):
+        start = review_mark(w.doc)
         w.write(blocks)
+        if comments:
+            review_comment(w.doc, start, review_lines(n, slide_flag, n in stats.get("llm_changed_slides", [])))
     w.save(docx_path)
     stats["docx"] = str(docx_path)
 

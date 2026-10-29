@@ -73,7 +73,7 @@ def run_layout_job(job_id, pptx: Path, provider, model, use_llm, include_hidden=
         stats = layout_engine.convert_pptx(
             pptx, docx_path, html_path,
             use_llm=use_llm, provider=provider, model=model,
-            work_dir=WORK / job_id / "build", progress=on_progress, include_hidden=include_hidden,
+            work_dir=WORK / job_id / "build", progress=on_progress, include_hidden=include_hidden, comments=True,
         )
         job.update(status="done", step=len(job["steps"]), file=str(docx_path), name=docx_path.name,
                    html=str(html_path), stats=stats)
