@@ -400,7 +400,8 @@ def register(app, work_dir):
             stats = report_engine.convert_report(
                 j["src"], out / (Path(j["source"]).stem + ".docx"),
                 planner="auto" if j["mode"] == "llm" else "rules", render=rendered,
-                work_dir=out, slides_dir=j["dir"] / "slides" if rendered else None, progress=on_progress)
+                work_dir=out, slides_dir=j["dir"] / "slides" if rendered else None, progress=on_progress,
+                comments=True)
             j["results"], j["ai"] = report_fragments(j["id"], out, "report"), {}
             j["llm_failed"] = stats["llm_failed"]
             tick(1, total)
