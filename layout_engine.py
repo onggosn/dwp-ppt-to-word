@@ -1043,23 +1043,82 @@ try {
 
 
 def render_slides(pptx: Path, out_dir: Path, width_px: int = 2667) -> bool:
-    """Render tiap slide ke out_dir/slideN.png lewat PowerPoint. False kalau PowerPoint tidak tersedia."""
-    ps = shutil.which("powershell") or shutil.which("pwsh")
-    if not ps:
-        return False
+    """Render tiap slide ke out_dir/slideN.png lewat PowerPoint, atau LibreOffice kalau PowerPoint tidak ada
+    (macOS/Linux). False kalau keduanya tidak tersedia: pemanggil pakai gambar asli dari PPTX."""
     prs = Presentation(str(pptx))
     height_px = round(width_px * prs.slide_height / prs.slide_width)
     out_dir.mkdir(parents=True, exist_ok=True)
+    with _render_lock:
+        if _render_powerpoint(pptx, out_dir, width_px, height_px):
+            return True
+        return _render_libreoffice(pptx, out_dir, width_px, len(prs.slides))
+
+
+def _render_powerpoint(pptx: Path, out_dir: Path, width_px: int, height_px: int) -> bool:
+    ps = shutil.which("powershell") or shutil.which("pwsh")
+    if not ps:
+        return False
     script = (_PS_RENDER.replace("{src}", str(pptx.resolve()).replace("'", "''"))
               .replace("{out}", str(out_dir.resolve()).replace("'", "''"))
               .replace("{w}", str(width_px)).replace("{h}", str(height_px)))
-    with _render_lock:
+    try:
+        subprocess.run([ps, "-NoProfile", "-NonInteractive", "-Command", script],
+                       check=True, capture_output=True, timeout=900)
+    except (subprocess.SubprocessError, OSError) as e:
+        print(f"  [!] Render PowerPoint gagal, coba LibreOffice: {e}")
+        return False
+    return (out_dir / "slide1.png").exists()
+
+
+def find_soffice() -> Optional[str]:
+    found = shutil.which("soffice") or shutil.which("libreoffice")
+    if found:
+        return found
+    for p in (r"C:\Program Files\LibreOffice\program\soffice.exe",
+              r"C:\Program Files (x86)\LibreOffice\program\soffice.exe",
+              "/Applications/LibreOffice.app/Contents/MacOS/soffice"):
+        if Path(p).exists():
+            return p
+    return None
+
+
+# slide yang di-hide ikut diekspor supaya halaman PDF ke-n = slide ke-n (sama dengan Export PowerPoint)
+_LO_PDF_FILTER = 'pdf:impress_pdf_Export:{"ExportHiddenSlides":{"type":"boolean","value":"true"}}'
+
+
+def _render_libreoffice(pptx: Path, out_dir: Path, width_px: int, n_slides: int) -> bool:
+    """PPTX -> PDF (LibreOffice headless) -> PNG per halaman (PyMuPDF), nama file sama dengan render PowerPoint."""
+    soffice = find_soffice()
+    if not soffice:
+        return False
+    try:
+        import fitz   # PyMuPDF
+    except ImportError:
+        print("  [!] PyMuPDF belum terpasang (pip install pymupdf), pakai gambar asli dari PPTX")
+        return False
+    import tempfile
+    with tempfile.TemporaryDirectory(prefix="lo_render_") as tmp:
+        tmp = Path(tmp)
+        # profil sendiri: tidak bentrok dengan LibreOffice yang sedang dibuka pengguna
+        profile = (tmp / "profile").resolve().as_uri()
         try:
-            subprocess.run([ps, "-NoProfile", "-NonInteractive", "-Command", script],
+            subprocess.run([soffice, f"-env:UserInstallation={profile}", "--headless", "--norestore",
+                            "--convert-to", _LO_PDF_FILTER, "--outdir", str(tmp), str(pptx.resolve())],
                            check=True, capture_output=True, timeout=900)
         except (subprocess.SubprocessError, OSError) as e:
-            print(f"  [!] Render PowerPoint gagal, pakai gambar asli dari PPTX: {e}")
+            print(f"  [!] Render LibreOffice gagal, pakai gambar asli dari PPTX: {e}")
             return False
+        pdf = tmp / (pptx.stem + ".pdf")
+        if not pdf.exists():
+            print("  [!] LibreOffice tidak menghasilkan PDF, pakai gambar asli dari PPTX")
+            return False
+        with fitz.open(pdf) as doc:
+            if len(doc) != n_slides:
+                print(f"  [!] PDF LibreOffice {len(doc)} halaman, PPTX {n_slides} slide: render tidak dipakai")
+                return False
+            for i, page in enumerate(doc, 1):
+                zoom = width_px / page.rect.width
+                page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False).save(str(out_dir / f"slide{i}.png"))
     return (out_dir / "slide1.png").exists()
 
 

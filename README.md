@@ -22,7 +22,7 @@ Format rules: all figures of a slide go in one image | caption table (wide figur
 
 ## Setup
 
-Windows with Microsoft PowerPoint installed is needed for slide renders (pictures, charts, infographics). Without it, pass `--no-render` to use the original images from the PPTX.
+Slide renders (pictures, charts, infographics) use Microsoft PowerPoint on Windows. Without PowerPoint (macOS, Linux) they fall back to LibreOffice (`soffice` on PATH or the default install location) plus PyMuPDF; PowerPoint renders are the most faithful. With neither, or with `--no-render`, the original images from the PPTX are used.
 
 ```
 python -m venv .venv
