@@ -161,26 +161,10 @@ def sanitize(plan):
 
 
 # --------------------------------------------------------------------------- provider
-_gemini_client = None
-_gemini_lock = threading.Lock()
+def _bedrock(prompt: str, image: Optional[bytes], model: str) -> str:
+    import bedrock_llm
 
-
-def _gemini(prompt: str, image: Optional[bytes], model: str) -> str:
-    global _gemini_client
-    from google import genai
-    from google.genai import types
-
-    with _gemini_lock:
-        if _gemini_client is None:
-            key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
-            if not key:
-                raise RuntimeError("GOOGLE_API_KEY / GEMINI_API_KEY belum diisi")
-            _gemini_client = genai.Client(api_key=key)
-    parts = ([types.Part.from_bytes(data=image, mime_type="image/jpeg")] if image else []) + [prompt]
-    resp = _gemini_client.models.generate_content(
-        model=model, contents=parts,
-        config=types.GenerateContentConfig(temperature=LLM_TEMPERATURE, response_mime_type="application/json"))
-    return resp.text or ""
+    return bedrock_llm.generate(prompt, image, model)
 
 
 def _ollama(prompt: str, image: Optional[bytes], model: str) -> str:
@@ -194,7 +178,7 @@ def _ollama(prompt: str, image: Optional[bytes], model: str) -> str:
 
 
 def call_llm(prompt: str, image: Optional[bytes], provider: str, model: str) -> str:
-    fn = {"gemini": _gemini, "ollama": _ollama}.get(provider.lower())
+    fn = {"bedrock": _bedrock, "ollama": _ollama}.get(provider.lower())
     if fn is None:
         raise ValueError(f"provider LLM tidak dikenal: {provider}")
     for attempt in range(API_RETRIES + 1):
@@ -204,7 +188,7 @@ def call_llm(prompt: str, image: Optional[bytes], provider: str, model: str) -> 
             raise
         except Exception as e:
             # 4xx selain 429 (model salah, key ditolak) tidak akan berhasil dengan mencoba ulang
-            if attempt == API_RETRIES or getattr(e, "code", None) in (400, 401, 403, 404):
+            if attempt == API_RETRIES or getattr(e, "status_code", getattr(e, "code", None)) in (400, 401, 403, 404):
                 raise
             time.sleep(2 ** (attempt + 1))
     return ""

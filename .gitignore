@@ -3,6 +3,7 @@
 
 /__pycache__
 /.venv
+/.env
 
 # work/ dibuka hanya untuk folder label dataset; sisanya tetap diabaikan
 /work/*

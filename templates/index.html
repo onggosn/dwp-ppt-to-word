@@ -550,12 +550,12 @@
                             <div class="row">
                                 <div><label for="provider">LLM provider</label>
                                     <select id="provider">
-                                        <option value="gemini">Gemini</option>
+                                        <option value="bedrock">AWS Bedrock (Claude)</option>
                                         <option value="ollama">Ollama (local)</option>
                                     </select>
                                 </div>
                                 <div><label for="model">Model</label><input type="text" id="model"
-                                        value="gemini-3.8-flash"></div>
+                                        value="" placeholder="default: BEDROCK_MODEL di .env"></div>
                             </div>
                             <div class="row" id="refrow">
                                 <div class="refbox"><label for="ref">Reference HTML file (required)</label><input
@@ -621,7 +621,7 @@
         $('usellm').onchange = ready;
         $('engine').onchange = ready;
         ready();   // label LLM sesuai mesin default
-        $('provider').onchange = e => { $('model').value = e.target.value === 'gemini' ? 'gemini-3.8-flash' : 'qwen2.5-coder:7b' };
+        $('provider').onchange = e => { $('model').value = e.target.value === 'bedrock' ? '' : 'qwen2.5-coder:7b' };
 
         go.onclick = async () => {
             const fd = new FormData();

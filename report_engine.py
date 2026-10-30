@@ -42,12 +42,13 @@ from lxml import etree
 from PIL import Image
 from pptx import Presentation
 
+import bedrock_llm
 import layout_engine as le
 from report_writer import DEFAULT_TEMPLATE, DOC_TITLE, HtmlReportWriter, ReportWriter, Tee
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_CACHE = HERE / "work" / "plan_cache"
-DEFAULT_MODEL = "gemini-3.8-flash"
+DEFAULT_MODEL = bedrock_llm.DEFAULT_MODEL
 PLANNER_VERSION = "4"         # naikkan kalau extract/prompt berubah supaya cache lama tidak dipakai
 
 # label template yang selalu dibuang (dibandingkan dalam huruf kapital)
@@ -724,7 +725,7 @@ def convert_report(
     docx_path,
     html_path=None,
     planner: str = "auto",
-    provider: str = "gemini",
+    provider: str = "bedrock",
     model: str = DEFAULT_MODEL,
     render: bool = True,
     work_dir=None,
@@ -856,7 +857,7 @@ if __name__ == "__main__":
     ap.add_argument("--planner", choices=PLANNERS, default="auto",
                     help="auto: LLM hanya untuk slide dense/bertanda (default); rules: tanpa LLM; "
                          "cached: rencana LLM yang sudah tersimpan, tanpa panggilan LLM; llm: semua slide")
-    ap.add_argument("--provider", choices=["gemini", "ollama"], default="gemini")
+    ap.add_argument("--provider", choices=["bedrock", "ollama"], default="bedrock")
     ap.add_argument("--model", default=DEFAULT_MODEL)
     ap.add_argument("--template", default=str(DEFAULT_TEMPLATE))
     ap.add_argument("--work-dir", default=None)

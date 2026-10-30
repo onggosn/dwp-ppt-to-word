@@ -11,7 +11,7 @@ Alur:
   5. opsional    LLM hanya merapikan teks per paragraf (JSON in/out, divalidasi); layout tidak disentuh LLM.
 
 CLI:
-    python layout_engine.py docs/test.pptx -o work/test.docx [--llm gemini --model gemini-3.8-flash]
+    python layout_engine.py docs/test.pptx -o work/test.docx [--llm bedrock --model us.anthropic.claude-opus-4-6-v1]
 """
 from __future__ import annotations
 
@@ -34,6 +34,7 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Emu, Pt
 
+import bedrock_llm
 from report_writer import review_comment, review_mark
 from PIL import Image
 from pptx import Presentation
@@ -1553,8 +1554,8 @@ def convert_pptx(
     html_path=None,
     template=DEFAULT_TEMPLATE,
     use_llm: bool = False,
-    provider: str = "gemini",
-    model: str = "gemini-3.8-flash",
+    provider: str = "bedrock",
+    model: str = bedrock_llm.DEFAULT_MODEL,
     render: bool = True,
     work_dir=None,
     progress: ProgressFn = _noop,
@@ -1645,10 +1646,10 @@ if __name__ == "__main__":
     ap.add_argument("--html", default=None, help="tulis juga HTML untuk CKEditor")
     ap.add_argument("--template", default=str(DEFAULT_TEMPLATE))
     ap.add_argument("--no-render", action="store_true", help="jangan pakai PowerPoint, ambil gambar asli")
-    ap.add_argument("--llm", choices=["gemini", "ollama"], default=None, help="opsional: rapikan teks dengan LLM")
-    ap.add_argument("--model", default="gemini-3.8-flash")
+    ap.add_argument("--llm", choices=["bedrock", "ollama"], default=None, help="opsional: rapikan teks dengan LLM")
+    ap.add_argument("--model", default=bedrock_llm.DEFAULT_MODEL)
     ap.add_argument("--include-hidden", action="store_true", help="ikut konversi slide yang di-hide")
     a = ap.parse_args()
     print(convert_pptx(a.pptx, a.output, a.html, a.template, use_llm=bool(a.llm),
-                       provider=a.llm or "gemini", model=a.model, render=not a.no_render,
+                       provider=a.llm or "bedrock", model=a.model, render=not a.no_render,
                        progress=lambda f, m: print(f"[{f:4.0%}] {m}"), include_hidden=a.include_hidden))

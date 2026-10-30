@@ -133,7 +133,7 @@ def prepare_dataset(pptx_path: str, output_dir: str):
         json.dump(dataset_mapping, f, indent=2)
     
     print(f"\nSelesai! Silakan cek folder '{output_dir}'.")
-    print("Gunakan gambar di sub-folder 'annotated' untuk di-prompt ke Gemini AI.")
+    print("Gunakan gambar di sub-folder 'annotated' untuk di-prompt ke LLM.")
 
 if __name__ == "__main__":
     # Ganti 'docs/test.pptx' dengan path file presentasimu

@@ -30,7 +30,7 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-LLM features need `GOOGLE_API_KEY` or `GEMINI_API_KEY` in the environment. They are optional: `--planner rules` never calls an LLM.
+LLM features use Claude on AWS Bedrock with a Bedrock API key: set `AWS_BEARER_TOKEN_BEDROCK` and `AWS_REGION` (default `us-east-1`), exported or in a `.env` file in the repo root (git-ignored); `BEDROCK_MODEL` overrides the default model `us.anthropic.claude-opus-4-6-v1`. They are optional: `--planner rules` never calls an LLM.
 
 ## Usage
 
@@ -44,7 +44,7 @@ python report_engine.py docs/test2.pptx -o work/test2_cached.docx --planner cach
 python report_engine.py docs/test3.pptx -o work/test3_llm.docx --planner llm        # every slide to the LLM
 ```
 
-Useful options: `--slides 5,12,30` (retry only these), `--include-hidden`, `--no-render`, `--no-cache`, `--workers N` (parallel LLM calls), `--provider gemini|ollama`, `--model`.
+Useful options: `--slides 5,12,30` (retry only these), `--include-hidden`, `--no-render`, `--no-cache`, `--workers N` (parallel LLM calls), `--provider bedrock|ollama`, `--model`.
 
 Besides the DOCX, the engine writes `plans.json` (the plan of every slide) and `review.json` (renders and results for the review page) into the work directory.
 

@@ -8,9 +8,7 @@ import ollama
 from pathlib import Path
 from bs4 import BeautifulSoup, Comment
 
-# NEW Google SDK (pip install google-genai). The old `google.generativeai` is deprecated.
-from google import genai
-from google.genai import types as genai_types
+import bedrock_llm
 
 from docling.document_converter import DocumentConverter, PowerpointFormatOption, PdfFormatOption
 from docling.datamodel.base_models import InputFormat
@@ -24,12 +22,10 @@ from docx.oxml.ns import qn
 from docx.shared import Inches, Mm
 
 # =================================================================
-# GOOGLE AI STUDIO API KEY (only needed for Gemini)
-# Set it as an environment variable: GOOGLE_API_KEY or GEMINI_API_KEY
+# AWS BEDROCK API KEY (only needed for the Bedrock provider)
+# Set it as an environment variable: AWS_BEARER_TOKEN_BEDROCK (+ AWS_REGION)
 # =================================================================
-GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY") or ""
-DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
-_gemini_client = genai.Client(api_key=GOOGLE_API_KEY) if GOOGLE_API_KEY else None
+DEFAULT_BEDROCK_MODEL = bedrock_llm.DEFAULT_MODEL
 
 
 def check_cuda_availability():
@@ -195,49 +191,27 @@ def apply_deterministic_html_styles(html_str):
     return str(soup)
 
 
-# Merapikan HTML butuh hasil konsisten, bukan kreatif: dipakai oleh Gemini dan Ollama.
+# Merapikan HTML butuh hasil konsisten, bukan kreatif: dipakai oleh Ollama.
 LLM_TEMPERATURE = 0.0
-
-
-def _gemini_generate(prompt, model_name, progress_cb=None):
-    """Streams the response with thinking turned off.
-    Tries thinking_budget=0, then thinking_level="low", then plain defaults,
-    because the accepted setting differs between Gemini models / SDK versions."""
-    last_error: Exception = RuntimeError("Gemini request failed")
-    for think_kwargs in ({"thinking_budget": 0}, {"thinking_level": "low"}, None):
-        try:
-            cfg = {"temperature": LLM_TEMPERATURE}
-            if think_kwargs:
-                cfg["thinking_config"] = genai_types.ThinkingConfig(**think_kwargs)
-            chunks, total = [], 0
-            for chunk in _gemini_client.models.generate_content_stream(
-                model=model_name,
-                contents=prompt,
-                config=genai_types.GenerateContentConfig(**cfg),
-            ):
-                if chunk.text:
-                    chunks.append(chunk.text)
-                    total += len(chunk.text)
-                    if progress_cb:
-                        progress_cb(total)
-                    print(f"\r  [LLM] menerima respons... {total} karakter", end="", flush=True)
-            print()
-            return "".join(chunks)
-        except Exception as e:
-            last_error = e
-            print(f"\n  [!] Gemini ({think_kwargs}) gagal: {e}")
-    raise last_error
 
 
 def _call_llm(prompt, provider, model_name, progress_cb=None):
     """Returns the raw LLM text, or None if the provider isn't usable."""
     provider = provider.lower()
 
-    if provider == "gemini":
-        if _gemini_client is None:
-            print("  [!] GOOGLE_API_KEY belum diisi. Melewati proses perapian LLM.")
+    if provider == "bedrock":
+        if not os.environ.get("AWS_BEARER_TOKEN_BEDROCK"):
+            print("  [!] AWS_BEARER_TOKEN_BEDROCK belum diisi. Melewati proses perapian LLM.")
             return None
-        return _gemini_generate(prompt, model_name, progress_cb)
+
+        def on_text(total):
+            if progress_cb:
+                progress_cb(total)
+            print(f"\r  [LLM] menerima respons... {total} karakter", end="", flush=True)
+
+        text = bedrock_llm.generate(prompt, model=model_name, on_text=on_text)
+        print()
+        return text
 
     if provider == "ollama":
         parts, total = [], 0
@@ -310,7 +284,7 @@ def _reference_digest(ref_html, limit=6000):
     return str(soup)[:limit]
 
 
-def clean_html_with_llm(html_path, reference_html_path=None, provider="gemini", model_name=DEFAULT_GEMINI_MODEL, progress_cb=None):
+def clean_html_with_llm(html_path, reference_html_path=None, provider="bedrock", model_name=DEFAULT_BEDROCK_MODEL, progress_cb=None):
     skip_llm = provider.lower() == "none"
     if skip_llm:
         print("Melewati LLM (mode tanpa LLM) - hanya aturan Python yang diterapkan...")
@@ -548,8 +522,8 @@ if __name__ == "__main__":
 
     VIA_PDF = False                       # True: PPTX -> PDF (LibreOffice) -> Docling
     USE_LLM = True                        # False: skip the LLM, Python rules only
-    SELECTED_PROVIDER = "gemini"          # "ollama" or "gemini"
-    SELECTED_MODEL = DEFAULT_GEMINI_MODEL   # or "qwen2.5-coder:7b"
+    SELECTED_PROVIDER = "bedrock"         # "ollama" or "bedrock"
+    SELECTED_MODEL = DEFAULT_BEDROCK_MODEL  # or "qwen2.5-coder:7b"
 
     if not os.path.exists(source_pptx):
         print(f"Error: Berkas {source_pptx} tidak ditemukan.")

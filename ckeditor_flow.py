@@ -478,7 +478,7 @@ def register(app, work_dir):
         if j["ai"].get(n, {}).get("status") == "running":
             return jsonify(status="running")
         j["ai"][n] = {"status": "running", "error": None}
-        provider = body.get("provider") or "gemini"
+        provider = body.get("provider") or "bedrock"
         model = body.get("model") or report_engine.DEFAULT_MODEL
         threading.Thread(target=_run_ai, args=(j, n, prompt, provider, model), daemon=True).start()
         return jsonify(status="running")

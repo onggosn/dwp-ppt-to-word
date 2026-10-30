@@ -10,6 +10,7 @@ from pathlib import Path
 
 from flask import Flask, jsonify, render_template, request, send_file
 
+import bedrock_llm
 import converter as c  # your original code
 import ckeditor_flow  # PPT -> CKEditor (seamless editing)
 import layout_engine  # PPTX -> DOCX/HTML dari geometri slide (tanpa LLM)
@@ -131,8 +132,8 @@ def convert():
 
     is_pdf = f.filename.lower().endswith(".pdf")
     use_llm = request.form.get("use_llm", "true") == "true"
-    provider = request.form.get("provider", "gemini")
-    model = request.form.get("model") or "gemini-3.8-flash"
+    provider = request.form.get("provider", "bedrock")
+    model = request.form.get("model") or bedrock_llm.DEFAULT_MODEL
 
     # layout & report engine hanya untuk PPTX; PDF tetap lewat Docling
     if request.form.get("engine") == "report" and not is_pdf:
