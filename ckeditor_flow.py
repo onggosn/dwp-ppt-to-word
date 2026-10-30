@@ -261,7 +261,7 @@ def _public_slide(s, mapping, results=None):
 
 # ------------------------------------------------------------------ flask wiring
 def register(app, work_dir):
-    work = Path(work_dir)
+    work = Path(work_dir).resolve()   # absolut: send_from_directory menafsirkan path relatif terhadap folder app
     jobs = {}
     bp = Blueprint("ck", __name__, url_prefix="/api/ck")
 

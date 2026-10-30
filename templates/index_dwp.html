@@ -280,6 +280,17 @@
         .chk-item .res table { border-collapse: collapse; width: 100%; } .chk-item .res td { border: 1px solid var(--line); padding: 3px; vertical-align: top; }
         .chk-ok { background: var(--lg); border-radius: 8px; padding: 14px; font-size: 13px; color: var(--muted); }
         .chk-head .ghost-link { color: var(--blue2); font-size: 12px; font-weight: 600; text-decoration: none; align-self: center; }
+        /* halaman unduh hasil konversi */
+        .done-wrap { max-width: 720px; margin: 24px auto; text-align: center; }
+        .done-icon { width: 48px; height: 48px; border-radius: 24px; background: #e3f4ea; color: var(--ok); font-size: 24px; font-weight: 700; line-height: 48px; margin: 0 auto 12px; }
+        .done-wrap h3 { font-size: 18px; margin: 0 0 6px; }
+        .done-wrap > p { color: var(--muted); font-size: 13px; margin: 0 0 20px; }
+        .dl-grid { display: grid; grid-template-columns: minmax(0, 360px); justify-content: center; gap: 14px; text-align: left; }
+        .dl-card { border: 1px solid var(--line); border-radius: 10px; padding: 16px; display: flex; flex-direction: column; gap: 6px; }
+        .dl-card b { font-size: 14px; }
+        .dl-card small { color: var(--muted); font-size: 12px; flex: 1; margin-bottom: 8px; }
+        .dl-card .btn { text-align: center; }
+        .done-more { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-top: 20px; }
         .chk-item.fixed { border-left-color: var(--ok); }
         .chk-item .st { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 10px; background: var(--yl); color: #8a6d00; white-space: nowrap; }
         .chk-item.fixed .st { background: #e3f4ea; color: var(--ok); }
@@ -543,8 +554,28 @@
                                     <p class="foot">Konversi sekali jalan dengan report engine (aturan, tanpa LLM). Isi masuk ke sub-section sesuai mapping. Setelah konversi, PPT tetap tersimpan.</p>
                                     </div>
                                 </div>
+                                <!-- Setelah konversi selesai: unduh hasil -->
+                                <div id="doneWrap" hidden>
+                                    <div class="done-wrap">
+                                        <div class="done-icon" aria-hidden="true">✓</div>
+                                        <h3>Konversi selesai</h3>
+                                        <p id="doneSummary"></p>
+                                        <div class="dl-grid">
+                                            <div class="dl-card">
+                                                <b>Dokumen Word (.docx)</b>
+                                                <small id="dlDocxNote">Format laporan, dengan komentar Word pada slide yang perlu dicek.</small>
+                                                <a class="btn" id="dlDocx">Unduh DOCX</a>
+                                            </div>
+                                        </div>
+                                        <div class="done-more">
+                                            <button type="button" class="ghost sm" id="btnDoneCheck" hidden></button>
+                                            <button type="button" class="ghost sm" id="btnDoneCk">Buka di CKEditor</button>
+                                        </div>
+                                    </div>
+                                </div>
                                 <div id="ckWrap" hidden>
-                                    <div class="ck-tools"><button type="button" class="ghost sm" id="btnCheck" hidden></button></div>
+                                    <div class="ck-tools"><button type="button" class="ghost sm" id="btnCheck" hidden></button>
+                                        <button type="button" class="ghost sm" id="btnToDl">Unduh hasil</button></div>
                                     <div class="ck-body" id="ckBody"></div>
                                 </div>
                                 <!-- Langkah setelah konversi: slide yang otomatis ditandai perlu dicek -->
@@ -555,7 +586,7 @@
                                             <p id="chkSummary"></p>
                                         </div>
                                         <span class="sp"></span>
-                                        <a class="ghost-link" id="docxLink" hidden>Unduh DOCX (hasil otomatis)</a>
+                                        <button type="button" class="ghost" id="btnChkDl">Unduh hasil</button>
                                         <button type="button" class="primary" id="btnToCk">Lanjut ke CKEditor</button>
                                     </div>
                                     <div id="chkList"></div>
@@ -787,6 +818,7 @@
             "RDGM_Laporan_M5 Oktober 2026_Risalah RDG Laporan Evaluasi Pelaksanaan Bauran Kebijakan Bank Sentral"
         ];
 
+        let DL = { docx: false };   // file hasil konversi yang tersedia di server
         let cur = 2, mode = 'ppt', converting = false, timerConv = null, ckReady = false;
         let jobId = null, ckHtml = '', pptExists = false;
         let pptAsk = true;   // tab PPT selalu meminta generate (unggah) PPT dulu; pratinjau setelah unggah / "pakai PPT yang sudah ada"
@@ -868,8 +900,8 @@
         }
 
         function renderMode() {
-            const ck = mode === 'ck', check = mode === 'check';
-            $('modeCk').classList.toggle('on', ck || check); $('modeCk').setAttribute('aria-pressed', ck || check);
+            const ck = mode === 'ck', check = mode === 'check', done = mode === 'done';
+            $('modeCk').classList.toggle('on', ck || check || done); $('modeCk').setAttribute('aria-pressed', ck || check || done);
             $('modePpt').classList.toggle('on', mode === 'ppt'); $('modePpt').setAttribute('aria-pressed', mode === 'ppt');
             $('pptView').hidden = mode !== 'ppt';
             const ask = !pptExists || pptAsk;
@@ -883,12 +915,26 @@
                 : 'Dokumen ini belum memiliki file PPT di OneDrive. Generate PPT dari template section agar bisa mulai diedit.';
             $('ckWrap').hidden = !ck;
             $('checkWrap').hidden = !check;
+            $('doneWrap').hidden = !done;
             $('btnConvert').textContent = ckReady ? 'Konversi ulang ke CKEditor' : 'Konversi ke CKEditor';
             const open = CHECK.filter(s => !s.fix).length;
             $('btnCheck').hidden = !(ckReady && CHECK.length);
             $('btnCheck').textContent = open ? '⚠ Slide perlu dicek (' + open + ')' : '✓ Review slide (' + CHECK.length + ' ditangani)';
             if (ck) renderCk();
             if (check) renderCheck();
+            if (done) renderDone();
+        }
+
+        // Halaman unduh setelah konversi: DOCX + HTML CKEditor; review dan CKEditor tetap bisa dibuka dari sini
+        function renderDone() {
+            const open = CHECK.filter(s => !s.fix).length;
+            $('doneSummary').textContent = SLIDES.length + ' slide dari ' + (SRC || 'PPT') + ' sudah dikonversi' +
+                (LAST.mode === 'llm' ? ' (slide bertanda disusun ulang dengan LLM' +
+                    (LAST.llm_failed.length ? ', ' + LAST.llm_failed.length + ' gagal dan memakai hasil aturan' : '') + ')' : '') + '. ' +
+                (open ? open + ' slide ditandai sebaiknya dicek.' : 'Tidak ada slide yang perlu dicek.');
+            $('dlDocx').hidden = !DL.docx;
+            $('btnDoneCheck').hidden = !CHECK.length;
+            $('btnDoneCheck').textContent = open ? '⚠ Cek slide bertanda (' + open + ')' : '✓ Review slide (' + CHECK.length + ' ditangani)';
         }
 
         // Review setelah konversi: slide yang ditandai report engine. Per slide pengguna memilih
@@ -1024,6 +1070,9 @@
         $('modeCk').onclick = () => { mode = 'ck'; renderMode(); };
         $('btnToCk').onclick = () => { mode = 'ck'; renderMode(); };
         $('btnCheck').onclick = () => { mode = 'check'; renderMode(); };
+        $('btnDoneCheck').onclick = () => { mode = 'check'; renderMode(); };
+        $('btnDoneCk').onclick = () => { mode = 'ck'; renderMode(); };
+        $('btnToDl').onclick = $('btnChkDl').onclick = () => { mode = 'done'; renderMode(); };
         $('modePpt').onclick = () => { mode = 'ppt'; pptAsk = true; renderMode(); };
         $('tocMin').onclick = () => { $('edBody').classList.add('toc-min'); };
         $('tocMax').onclick = () => { $('edBody').classList.remove('toc-min'); };
@@ -1075,15 +1124,11 @@
             ckReady = true;
             CHECK = SLIDES.filter(s => s.f && s.f.length);
             // ada slide bertanda -> tampilkan ringkasan cek dulu, baru masuk CKEditor
-            mode = CHECK.length ? 'check' : 'ck';
-            const open = CHECK.filter(s => !s.fix).length;
+            mode = 'done';
             setTimeout(() => {
                 showModal(false);
                 render();
-                toast(!CHECK.length ? 'Konversi selesai. Dokumen dibuka di CKEditor.'
-                    : LAST.mode === 'llm' ? 'Konversi selesai. LLM memperbaiki ' + (CHECK.length - open) + ' slide' +
-                        (LAST.llm_failed.length ? ', ' + LAST.llm_failed.length + ' gagal (hasil aturan dipakai)' : '') + '.'
-                    : 'Konversi selesai. ' + CHECK.length + ' slide sebaiknya dicek.');
+                toast('Konversi selesai. Hasil siap diunduh.');
             }, 600);
         }
 
@@ -1106,8 +1151,8 @@
             });
             Object.keys(FIXUI).forEach(k => delete FIXUI[k]);
             LAST = { mode: h.mode || 'manual', llm_failed: h.llm_failed || [] };
-            $('docxLink').hidden = !h.docx;
-            $('docxLink').href = '/api/ck/docx/' + jobId;
+            DL = { docx: !!h.docx };
+            $('dlDocx').href = '/api/ck/docx/' + jobId;
             if (h.render && h.render !== RENDER) setRender(h.render);
         }
 
@@ -1164,7 +1209,7 @@
 
         // PPT diambil dari "OneDrive" (mockup: work/onedrive di server)
         function applyPpt(d) {
-            jobId = d.id; ckHtml = ''; ckReady = false; cur = 0; pptExists = true; pptAsk = false; CHECK = []; mode = 'ppt';
+            jobId = d.id; ckHtml = ''; ckReady = false; DL = { docx: false }; cur = 0; pptExists = true; pptAsk = false; CHECK = []; mode = 'ppt';
             TOC = d.toc.map(n => ({ c: n.code, t: n.title, l: n.level }));
             SLIDES = d.slides.map(s => ({ n: s.n, t: s.title, b: s.lines.slice(0, 8), s: s.section, m: s.method, f: [] }));
             SRC = d.source;
@@ -1199,7 +1244,7 @@
                     applyPpt(d);
                     // kembali ke posisi terakhir setelah refresh: hasil konversi / konversi yang masih berjalan;
                     // PPT yang belum dikonversi: tab PPT tetap meminta generate (bisa pakai PPT yang sudah diunggah)
-                    if (d.status === 'done') { await loadResult(); ckReady = true; CHECK = SLIDES.filter(s => s.f.length); mode = CHECK.length ? 'check' : 'ck'; render(); }
+                    if (d.status === 'done') { await loadResult(); ckReady = true; CHECK = SLIDES.filter(s => s.f.length); mode = 'done'; render(); }
                     else if (d.status === 'running') { converting = true; showModal(true); pollConvert(); }
                     else pptAsk = true;
                 }
