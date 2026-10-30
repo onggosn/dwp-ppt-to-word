@@ -72,6 +72,8 @@ WIDE_MIN_TEXTS = 5            # gambar berisi >= sekian teks / sel tabel (diagra
 WIDE_MIN_W = 0.5
 INFOGRAPHIC_MIN_PIECES = 14   # slide dense yang oleh aturan dipecah jadi sebanyak ini potongan (paragraf pendek,
 INFOGRAPHIC_SHORT_SHARE = 0.6 # tabel lepas dihitung 2) dan sebagian besar teksnya pendek = infografis -> satu gambar
+ONE_FIGURE_SHARE = 0.6        # slide dense yang rencana aturannya satu gambar berisi >= 60% elemen slide (+ judul dan
+ONE_FIGURE_MAX_TEXTS = 3      # paling banyak 3 teks/tabel lain) = sudah benar sebagai gambar -> tidak dikirim ke LLM
 NO_LLM_KINDS = ("cover", "divider", "closing", "infographic")
 PLANNERS = ("rules", "cached", "auto", "llm")
 
@@ -312,6 +314,18 @@ def is_infographic(sp: SlidePlan) -> bool:
     short = sum(1 for t in paras if len(t) < FRAGMENT_CHARS)
     tables = sum(1 for b in blocks if b["type"] == "table")
     return short + 2 * tables >= INFOGRAPHIC_MIN_PIECES and short >= INFOGRAPHIC_SHORT_SHARE * len(paras)
+
+
+def is_one_figure(sp: SlidePlan) -> bool:
+    """Slide dense yang oleh aturan sudah jadi satu gambar besar (dashboard / panel) + judul dan pesan kunci.
+    Tidak ada susunan yang perlu diperbaiki; LLM justru memecah gambarnya jadi potongan lepas."""
+    if sp.kind != "dense":
+        return False
+    blocks = sp.rules_plan["blocks"]
+    figs = [b for b in blocks if b["type"] == "figure" and not b.get("icon")]
+    rest = [b for b in blocks if b["type"] not in ("figure", "note")]
+    return (len(figs) == 1 and len(figs[0]["ids"]) >= ONE_FIGURE_SHARE * len(sp.els)
+            and len(rest) <= ONE_FIGURE_MAX_TEXTS)
 
 
 def header_texts(els: dict, title) -> list:
@@ -783,6 +797,8 @@ def convert_report(
             # satu gambar dari render (tanpa render PowerPoint tidak ada yang bisa di-crop)
             sp.kind, sp.rules_plan, sp.flags = "infographic", infographic_plan(sp), []
             sp.plan = sp.rules_plan
+        elif rendered and is_one_figure(sp):
+            sp.kind, sp.flags = "infographic", []   # rencana aturan sudah benar; tidak dikirim ke LLM
         if planner != "rules":
             sp.key = cache_key(slide, provider, model + ("|" + instruction.strip() if instruction.strip() else ""))
         slides.append(sp)

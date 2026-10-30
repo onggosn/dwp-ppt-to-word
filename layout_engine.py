@@ -407,13 +407,23 @@ def merge_pictures(pics: list) -> list:
     return units
 
 
+TITLE_BAND_Y = 0.06      # placeholder BODY yang mulai di atas ini, pendek dan satu baris = judul slide
+TITLE_BAND_H = 0.1
+TITLE_MAX_CHARS = 80
+
+
 def _pick_title(boxes: list) -> Optional[Box]:
     # placeholder judul yang kosong tersimpan sebagai "shape" -> bukan judul
     t = next((b for b in boxes if b.is_title and b.kind == "text"), None)
     if t:
         return t
     named = [b for b in boxes if b.kind == "text" and re.match(r"(title|judul)", b.name, re.I)]
-    return min(named, key=lambda b: b.y, default=None)
+    if named:
+        return min(named, key=lambda b: b.y)
+    # template yang memakai placeholder isi (BODY) sebagai judul: satu baris pendek di pita paling atas
+    band = [b for b in boxes if b.kind == "text" and b.is_placeholder_body and b.y < TITLE_BAND_Y
+            and b.h < TITLE_BAND_H and len(b.paras) == 1 and 0 < len(b.text) <= TITLE_MAX_CHARS]
+    return min(band, key=lambda b: b.y, default=None)
 
 
 # --- grid: "tabel" yang disusun dari text box (header sejajar + kolom pengelompok baris)

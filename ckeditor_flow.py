@@ -60,9 +60,12 @@ DEFAULT_SECTIONS = [
 TAG_RE = re.compile(r"(?:\bSEC[:=_\-\s]*|\[\[)\s*(\d+(?:\.\d+)*)\s*(?:\]\])?", re.IGNORECASE)
 STEPS = ["Merender slide PPT", "Menyusun layout dengan report engine (tanpa LLM)",
          "Memetakan slide ke section Predefine", "Membuat konten CKEditor"]
-STEP_LLM = "Menyusun layout: aturan + LLM untuk slide bertanda"   # langkah 2 pada mode perbaikan otomatis
+STEP_LLM = {"llm": "Menyusun layout: aturan + LLM untuk slide bertanda",   # langkah 2 pada mode dengan LLM
+            "full": "Menyusun layout: LLM untuk semua slide isi"}
 WEIGHTS = (0.2, 0.55, 0.1, 0.15)
-CONVERT_MODES = ("manual", "llm")   # manual: aturan saja, slide bertanda diperbaiki di review; llm: planner auto
+# manual: aturan saja, slide bertanda diperbaiki di review; llm: planner auto (LLM untuk slide bertanda);
+# full: planner llm (LLM menyusun semua slide isi; cover/pembatas/penutup tetap aturan)
+CONVERT_MODES = {"manual": "rules", "llm": "auto", "full": "llm"}
 
 # tanda report engine (rules_flags) -> (kenapa perlu dicek, prompt AI yang disarankan)
 FLAG_INFO = report_engine.FLAG_INFO
@@ -367,7 +370,7 @@ def register(app, work_dir):
         mode = (request.get_json(force=True, silent=True) or {}).get("mode", "manual")
         if mode not in CONVERT_MODES:
             return jsonify(error="mode tidak dikenal."), 400
-        steps = [STEP_LLM if mode == "llm" and i == 1 else t for i, t in enumerate(STEPS)]
+        steps = [STEP_LLM[mode] if mode in STEP_LLM and i == 1 else t for i, t in enumerate(STEPS)]
         j.update(status="running", done=0, pct=0, phase=0, html="", error=None, mode=mode, llm_failed=[],
                  steps=[{"t": t, "state": "wait"} for t in steps])
         threading.Thread(target=_run, args=(j,), daemon=True).start()
@@ -399,7 +402,7 @@ def register(app, work_dir):
             out = j["dir"] / "report"
             stats = report_engine.convert_report(
                 j["src"], out / (Path(j["source"]).stem + ".docx"),
-                planner="auto" if j["mode"] == "llm" else "rules", render=rendered,
+                planner=CONVERT_MODES[j["mode"]], render=rendered,
                 work_dir=out, slides_dir=j["dir"] / "slides" if rendered else None, progress=on_progress,
                 comments=True)
             j["results"], j["ai"] = report_fragments(j["id"], out, "report"), {}

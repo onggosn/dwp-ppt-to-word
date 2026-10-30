@@ -626,7 +626,7 @@
     <div class="overlay" id="convDlg" hidden role="dialog" aria-modal="true" aria-labelledby="cTitle">
         <div class="modal">
             <h3 id="cTitle">Konversi ke CKEditor</h3>
-            <p class="sub">Report engine menyusun semua slide dengan aturan. Slide yang ditandai bermasalah diperbaiki dengan cara:</p>
+            <p class="sub">Pilih siapa yang menyusun layout slide. Teks dan angka selalu diambil apa adanya dari PPT.</p>
             <div class="choices">
                 <label class="choice">
                     <input type="radio" name="convMode" value="manual" checked>
@@ -637,6 +637,11 @@
                     <input type="radio" name="convMode" value="llm">
                     <span><b>Otomatis dengan LLM</b>
                         <small>LLM menyusun ulang slide bertanda saat konversi; teks dan angka tidak diubah. Memakai kuota LLM. Hasilnya tetap bisa dicek di halaman review.</small></span>
+                </label>
+                <label class="choice">
+                    <input type="radio" name="convMode" value="full">
+                    <span><b>Full AI</b>
+                        <small>LLM menyusun layout semua slide isi (cover, pembatas, penutup tetap dengan aturan). Paling lambat dan paling banyak memakai kuota LLM; slide yang gagal kembali ke hasil aturan.</small></span>
                 </label>
             </div>
             <div class="mact">
@@ -929,7 +934,7 @@
         function renderDone() {
             const open = CHECK.filter(s => !s.fix).length;
             $('doneSummary').textContent = SLIDES.length + ' slide dari ' + (SRC || 'PPT') + ' sudah dikonversi' +
-                (LAST.mode === 'llm' ? ' (slide bertanda disusun ulang dengan LLM' +
+                (LAST.mode === 'llm' || LAST.mode === 'full' ? (LAST.mode === 'full' ? ' (layout disusun dengan LLM' : ' (slide bertanda disusun ulang dengan LLM') +
                     (LAST.llm_failed.length ? ', ' + LAST.llm_failed.length + ' gagal dan memakai hasil aturan' : '') + ')' : '') + '. ' +
                 (open ? open + ' slide ditandai sebaiknya dicek.' : 'Tidak ada slide yang perlu dicek.');
             $('dlDocx').hidden = !DL.docx;
