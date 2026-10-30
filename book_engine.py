@@ -58,6 +58,8 @@ PREV_TAIL_CHARS = 500         # akhir teks slide sebelumnya (untuk slide lanjuta
 MAX_FIGURES = 3
 SIDE_ASPECT = 1.1             # gambar dengan rasio lebar/tinggi di bawah ini ditaruh di samping butir
 FIX_ATTEMPTS = 1
+MAX_NUMBER_NOTES = 6          # angka yang dikutip satu per satu di komentar review
+NUMBER_CONTEXT_CHARS = 45     # panjang potongan kalimat di kiri/kanan angka
 BLOCK_TYPES = {"heading", "label", "para", "bullet", "item", "table", "figure"}
 STYLES = ("topic", "text")
 
@@ -134,6 +136,8 @@ COMMON_RULES = """Content rules:
 - Ignore the authors' working notes: "Updated", "Need update", "DONE", "TBU", "Mohon bantuan ...", "Courtesy ...",
   "Will be updated", timestamps such as "Updated 05.00 WIB", revision comments/stickers, page numbers, template labels
   ("HASIL PEMBAHASAN DEWAN GUBERNUR").
+- Lists of codes/identifiers are not quantities: e.g. "Bank Rerata AL/DPK < 10%: 097, 485" lists bank codes,
+  so write "bank 097 dan 485", never "97 dan 485 bank". Copy codes exactly, leading zeros included.
 - Do not end a title or sentence with "..." or "…".
 - You may use Markdown **bold** and *italic*: italic for foreign terms (e.g. *safe haven*), bold for emphasis.
 """
@@ -570,6 +574,16 @@ def unknown_numbers(text: str, source: set) -> list:
     return out
 
 
+def number_context(text: str, number: str, chars: int = NUMBER_CONTEXT_CHARS) -> str:
+    """Potongan kalimat di sekitar angka, untuk komentar review ("...terdapat 97 dan 485 bank...")."""
+    m = re.search(r"(?<![\d.,])" + re.escape(number) + r"(?![\d]|[.,]\d)", text)
+    if not m:
+        return number
+    a, b = max(0, m.start() - chars), min(len(text), m.end() + chars)
+    snippet = re.sub(r"\s+", " ", text[a:b]).strip()
+    return ("…" if a else "") + snippet + ("…" if b < len(text) else "")
+
+
 def item_text(result: dict) -> str:
     parts = [result.get("title", "")]
     parts += [f.get("caption", "") for f in result.get("figures") or [] if isinstance(f, dict)]
@@ -750,10 +764,14 @@ def convert_book(
     for it in items:              # angka yang tidak ada di teks slide
         if it.source == "fallback":
             continue
-        missing = unknown_numbers(item_text(it.result), number_set(by_n[it.slide].source_text()))
+        text = item_text(it.result)
+        missing = unknown_numbers(text, number_set(by_n[it.slide].source_text()))
         if missing:
-            it.warnings.append("Angka berikut tidak ditemukan di teks slide (mungkin dibaca dari grafik); "
-                               "cocokkan dengan slide: " + ", ".join(missing[:12]))
+            it.warnings.append(f"Angka di teks buku yang tidak ada di teks slide {it.slide} (mungkin dibaca dari "
+                               "grafik, atau salah tafsir); cocokkan dengan slide:")
+            it.warnings += [f'angka "{n}": «{number_context(text, n)}»' for n in missing[:MAX_NUMBER_NOTES]]
+            if len(missing) > MAX_NUMBER_NOTES:
+                it.warnings.append("angka lain: " + ", ".join(missing[MAX_NUMBER_NOTES:]))
 
     progress(0.92, "Menulis dokumen Word")
     page = BookHtmlWriter(img_src) if img_src else BookHtmlWriter()
