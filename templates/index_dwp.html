@@ -439,11 +439,13 @@
                                     <select id="engine">
                                         <option value="report">Format laporan (aturan + LLM untuk slide kompleks)</option>
                                         <option value="layout">Layout engine (berbasis aturan, tanpa LLM)</option>
+                                        <option value="book">Buku ringkasan (Full AI)</option>
                                     </select>
+                                    <small id="bookhint" hidden>AI menyusun bab dan bagian, meringkas tiap slide, dan memotong grafiknya dari render slide. Memakai kuota LLM untuk setiap slide isi.</small>
                                 </div>
                             </div>
                             <label class="chk"><input type="checkbox" id="inclhidden"> Ikutkan slide yang disembunyikan (hidden)</label>
-                            <label class="chk"><input type="checkbox" id="usellm"> <span id="llmlabel">Gunakan LLM untuk merapikan teks (opsional)</span></label>
+                            <label class="chk" id="usellmrow"><input type="checkbox" id="usellm"> <span id="llmlabel">Gunakan LLM untuk merapikan teks (opsional)</span></label>
                             <div id="llmopts" hidden>
                                 <div class="row">
                                     <div>
@@ -626,7 +628,7 @@
     <div class="overlay" id="convDlg" hidden role="dialog" aria-modal="true" aria-labelledby="cTitle">
         <div class="modal">
             <h3 id="cTitle">Konversi ke CKEditor</h3>
-            <p class="sub">Pilih siapa yang menyusun layout slide. Teks dan angka selalu diambil apa adanya dari PPT.</p>
+            <p class="sub">Pilih siapa yang menyusun layout slide. Pada tiga pilihan pertama teks dan angka diambil apa adanya dari PPT.</p>
             <div class="choices">
                 <label class="choice">
                     <input type="radio" name="convMode" value="manual" checked>
@@ -642,6 +644,11 @@
                     <input type="radio" name="convMode" value="full">
                     <span><b>Full AI</b>
                         <small>LLM menyusun layout semua slide isi (cover, pembatas, penutup tetap dengan aturan). Paling lambat dan paling banyak memakai kuota LLM; slide yang gagal kembali ke hasil aturan.</small></span>
+                </label>
+                <label class="choice">
+                    <input type="radio" name="convMode" value="book">
+                    <span><b>Buku ringkasan (Full AI)</b>
+                        <small>AI menyusun bab dan bagian sendiri, meringkas tiap slide (judul, gambar grafik, butir ringkasan), dan melewati sampul, agenda, pembatas, dan lampiran. Judul buku = Title dokumen. Angka yang tidak ditemukan di slide diberi komentar di DOCX. Memakai kuota LLM untuk setiap slide isi.</small></span>
                 </label>
             </div>
             <div class="mact">
@@ -701,7 +708,10 @@
             $('llmlabel').textContent = pdf ? 'Gunakan LLM untuk merapikan layout (PDF)'
                 : $('engine').value === 'report' ? 'Gunakan LLM untuk slide kompleks (disarankan)' : 'Gunakan LLM untuk merapikan teks (opsional)';
             $('engine').disabled = pdf;
-            $('llmopts').hidden = !$('usellm').checked;
+            const book = !pdf && $('engine').value === 'book';   // buku ringkasan selalu memakai AI
+            $('bookhint').hidden = !book;
+            $('usellmrow').hidden = book;
+            $('llmopts').hidden = !(book || $('usellm').checked);
             $('refbox').hidden = !pdf;
             go.disabled = !(f && /\.(pptx|pdf)$/i.test(f.name) && (!pdf || !$('usellm').checked || r));
         }
@@ -716,7 +726,7 @@
             fd.append('pptx', file.files[0]);
             fd.append('engine', $('engine').value);
             fd.append('include_hidden', $('inclhidden').checked);
-            fd.append('use_llm', $('usellm').checked);
+            fd.append('use_llm', $('usellm').checked || $('engine').value === 'book');
             fd.append('provider', $('provider').value);
             fd.append('model', $('model').value);
             if ($('usellm').checked && isPdf()) fd.append('reference', $('ref').files[0]);
@@ -746,7 +756,8 @@
                     if (!running) return '<li class="' + cls + '"><span class="dot"></span><span>' + t + '</span></li>';
                     let detail = 'Sedang berjalan...';
                     if (i === j.llm_step) detail = j.llm_chars > 0 ? 'Menerima respons... ' + j.llm_chars.toLocaleString() + ' karakter' : 'Menunggu model mulai merespons...';
-                    else if (i === 0 && secs > 15) detail = ['layout', 'report'].includes(j.engine) ? 'Masih merender slide dengan PowerPoint.' : 'Masih membaca. Pada eksekusi pertama, Docling mungkin mengunduh model.';
+                    else if (j.engine === 'book' && j.detail) detail = j.detail;
+                    else if (i === 0 && secs > 15) detail = ['layout', 'report', 'book'].includes(j.engine) ? 'Masih merender slide.' : 'Masih membaca. Pada eksekusi pertama, Docling mungkin mengunduh model.';
                     return '<li class="run"><span class="dot"></span><span>' + t + '<span class="meta">' + elapsed + '</span>' +
                         '<span class="bar"><i></i></span><span class="detail">' + detail + '</span></span></li>';
                 }).join('');
@@ -827,7 +838,7 @@
         let cur = 2, mode = 'ppt', converting = false, timerConv = null, ckReady = false;
         let jobId = null, ckHtml = '', pptExists = false;
         let pptAsk = true;   // tab PPT selalu meminta generate (unggah) PPT dulu; pratinjau setelah unggah / "pakai PPT yang sudah ada"
-        let SRC = '', LAST = { mode: 'manual', llm_failed: [] };   // nama PPT; mode dan slide gagal LLM konversi terakhir
+        let SRC = '', LAST = { mode: 'manual', llm_failed: [], check: [], book: null };   // nama PPT; mode dan slide gagal LLM konversi terakhir
         let RENDER = 'unavailable', renderTimer = null, CHECK = [];   // CHECK: slide yang ditandai perlu dicek
         const METHOD = {
             tag: 'Berdasarkan tag SEC pada objek / catatan PPT.',
@@ -933,6 +944,20 @@
         // Halaman unduh setelah konversi: DOCX + HTML CKEditor; review dan CKEditor tetap bisa dibuka dari sini
         function renderDone() {
             const open = CHECK.filter(s => !s.fix).length;
+            const book = LAST.mode === 'book' && LAST.book;
+            $('dlDocxNote').textContent = book ? 'Buku ringkasan, dengan komentar Word pada angka yang perlu dicocokkan dengan slide.'
+                : 'Format laporan, dengan komentar Word pada slide yang perlu dicek.';
+            if (book) {
+                const b = LAST.book;
+                $('doneSummary').textContent = 'Buku "' + b.title + '" disusun AI dari ' + (SRC || 'PPT') + ': ' + b.chapters + ' bab, ' +
+                    b.used + ' slide diringkas, ' + b.skipped + ' slide dilewati (sampul, agenda, pembatas, lampiran). ' +
+                    (LAST.llm_failed.length ? LAST.llm_failed.length + ' slide gagal ditulis AI dan memakai gambar slide utuh. ' : '') +
+                    (LAST.check.length ? LAST.check.length + ' slide punya angka yang perlu dicocokkan (slide ' + LAST.check.join(', ') + '); lihat komentar di DOCX.'
+                        : 'Semua angka ditemukan di teks slide.');
+                $('dlDocx').hidden = !DL.docx;
+                $('btnDoneCheck').hidden = true;
+                return;
+            }
             $('doneSummary').textContent = SLIDES.length + ' slide dari ' + (SRC || 'PPT') + ' sudah dikonversi' +
                 (LAST.mode === 'llm' || LAST.mode === 'full' ? (LAST.mode === 'full' ? ' (layout disusun dengan LLM' : ' (slide bertanda disusun ulang dengan LLM') +
                     (LAST.llm_failed.length ? ', ' + LAST.llm_failed.length + ' gagal dan memakai hasil aturan' : '') + ')' : '') + '. ' +
@@ -1155,7 +1180,7 @@
                     prompt: x.prompt || '', fix: x.fix || null, edited: !!x.edited });
             });
             Object.keys(FIXUI).forEach(k => delete FIXUI[k]);
-            LAST = { mode: h.mode || 'manual', llm_failed: h.llm_failed || [] };
+            LAST = { mode: h.mode || 'manual', llm_failed: h.llm_failed || [], check: h.check || [], book: h.book || null };
             DL = { docx: !!h.docx };
             $('dlDocx').href = '/api/ck/docx/' + jobId;
             if (h.render && h.render !== RENDER) setRender(h.render);
@@ -1180,7 +1205,7 @@
         async function realConvert(convMode) {
             paintProgress(0, 0, SLIDES.length, STEPS.map((s, i) => i ? 'wait' : 'run'));
             try {
-                await postJson('/api/ck/convert/' + jobId, { mode: convMode });
+                await postJson('/api/ck/convert/' + jobId, { mode: convMode, title: $('docTitle').value });
             } catch (e) { return failConvert(e.message); }
             pollConvert();
         }

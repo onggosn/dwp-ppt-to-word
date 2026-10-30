@@ -250,6 +250,10 @@
             margin-top: 16px
         }
 
+        [hidden] {
+            display: none !important
+        }
+
         .chk {
             display: flex;
             align-items: center;
@@ -534,6 +538,7 @@
                                 <select id="engine">
                                     <option value="report">Report format (rules + LLM for complex slides)</option>
                                     <option value="layout">Layout engine (rule-based, no LLM needed)</option>
+                                    <option value="book">Summary book (Full AI)</option>
                                     <option value="docling">Docling + LLM layout (legacy)</option>
                                 </select>
                                 <small id="enginehint">Layout comes from slide geometry. PDF files always use Docling.</small>
@@ -543,7 +548,7 @@
                             <label class="chk"><input type="checkbox" id="inclhidden"> Include hidden slides</label>
                         </div>
                         <div class="opts">
-                            <label class="chk"><input type="checkbox" id="usellm"> <span id="llmlabel">Use LLM to
+                            <label class="chk" id="usellmrow"><input type="checkbox" id="usellm"> <span id="llmlabel">Use LLM to
                                     tidy the text (optional)</span></label>
                         </div>
                         <div id="llmopts" hidden>
@@ -607,12 +612,18 @@
         function picked() { const f = file.files[0]; if (!f) return; $('fname').textContent = f.name; ready() }
         // Layout engine: hanya untuk .pptx; HTML referensi hanya dibutuhkan oleh alur Docling + LLM
         // Report engine: sama seperti layout engine (PPTX saja, tanpa HTML referensi); LLM = rencana slide sulit
-        function layoutMode() { const f = file.files[0]; return ['layout', 'report'].includes($('engine').value) && !(f && /\.pdf$/i.test(f.name)) }
+        function layoutMode() { const f = file.files[0]; return ['layout', 'report', 'book'].includes($('engine').value) && !(f && /\.pdf$/i.test(f.name)) }
+        // Summary book: PPTX only, always uses the LLM (AI writes the outline and every slide)
+        function bookMode() { return layoutMode() && $('engine').value === 'book' }
         function ready() {
             const f = file.files[0], r = $('ref').files[0], layout = layoutMode();
             $('llmlabel').textContent = !layout ? 'Use LLM to tidy the layout'
                 : $('engine').value === 'report' ? 'Use LLM for complex slides (recommended)' : 'Use LLM to tidy the text (optional)';
-            $('llmopts').hidden = !$('usellm').checked;
+            $('usellmrow').hidden = bookMode();
+            $('enginehint').textContent = bookMode()
+                ? 'AI plans chapters and sections, summarises each slide and crops its charts from the slide render. Uses the LLM for every content slide.'
+                : 'Layout comes from slide geometry. PDF files always use Docling.';
+            $('llmopts').hidden = !($('usellm').checked || bookMode());
             $('refrow').hidden = layout;
             $('hiddenopt').hidden = !layout;
             go.disabled = !(f && /\.(pptx|pdf)$/i.test(f.name) && (layout || !$('usellm').checked || r));
@@ -628,7 +639,7 @@
             fd.append('pptx', file.files[0]);
             fd.append('engine', $('engine').value);
             fd.append('include_hidden', $('inclhidden').checked);
-            fd.append('use_llm', $('usellm').checked);
+            fd.append('use_llm', $('usellm').checked || bookMode());
             fd.append('provider', $('provider').value);
             fd.append('model', $('model').value);
             if ($('usellm').checked && !layoutMode()) fd.append('reference', $('ref').files[0]);
@@ -653,6 +664,7 @@
                     if (!running) return '<li class="' + cls + '"><span class="dot"></span><span>' + t + '</span></li>';
                     let detail = 'Working...';
                     if (i === j.llm_step) detail = j.llm_chars > 0 ? 'Receiving response... ' + j.llm_chars.toLocaleString() + ' characters' : 'Waiting for the model to start responding...';
+                    else if (j.engine === 'book' && j.detail) detail = j.detail;
                     else if (i === 0 && secs > 15) detail = 'Still reading. On the first run Docling may be downloading its models.';
                     return '<li class="run"><span class="dot"></span><span>' + t + '<span class="meta">' + elapsed + '</span>' +
                         '<span class="bar"><i></i></span><span class="detail">' + detail + '</span></span></li>';

@@ -4,8 +4,19 @@
     {
       "name": "flask-app",
       "runtimeExecutable": ".venv/Scripts/python.exe",
-      "runtimeArgs": ["app.py"],
+      "runtimeArgs": [
+        "app.py"
+      ],
       "port": 5001
+    },
+    {
+      "name": "flask-app-mac",
+      "runtimeExecutable": ".venv/bin/python",
+      "runtimeArgs": [
+        "-c",
+        "import app; app.app.run(threaded=True, port=5002)"
+      ],
+      "port": 5002
     }
   ]
 }

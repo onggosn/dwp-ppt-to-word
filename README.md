@@ -57,6 +57,21 @@ Besides the DOCX, the engine writes `plans.json` (the plan of every slide) and `
 | `auto` (default) | Sends dense or flagged slides to the LLM. |
 | `llm` | Sends every content slide to the LLM. |
 
+### Summary book (Full AI)
+
+`book_engine.py` turns a deck into a condensed **book** like `docs/new/RDGB_Maret 2026_Buku 2d ....pdf` (made from the deck in the same folder). Unlike the report engine, the AI decides the structure and writes the text:
+
+1. **Outline**: one text-only call over the whole deck picks the book title, chapters and sections, and which slides go where. Each slide is either a `topic` (box with key-message title, one image of the slide's charts, summary bullets) or `text` (near-verbatim text: conclusions, policy recommendations, with numbered points, Word tables from the slide's own table data). Cover, agenda, dividers, appendix and working notes are left out.
+2. **Per slide**: one call with the slide render and its elements. The AI only names which elements form the chart area; the image is cropped from the render, so charts are never redrawn.
+3. **Number check**: any number in the AI text that is not in the slide's text gets a Word comment, since it may have been read off a chart or mistyped.
+
+```
+python book_engine.py "docs/new/DKEM RDGB Maret 2026_06_Materi Hari Kedua_afterRDG.pptx" -o work/buku.docx
+python book_engine.py deck.pptx -o work/buku.docx --title "RDGB_Maret 2026_Buku 2d ..." --workers 6
+```
+
+Prompts are in English; the book is written in Indonesian. Answers are cached in `work/book_cache`, so re-runs only call the LLM for changed slides. `<work>/book.json` keeps the outline and each slide's result and warnings. In the web app it is the "Summary book (Full AI)" / "Buku ringkasan (Full AI)" engine.
+
 ### Web app
 
 ```
@@ -87,6 +102,7 @@ python -m unittest discover tests                                        # no py
 |---|---|
 | `report_engine.py` | Extract, plan, route, validate; CLI entry point |
 | `report_writer.py` | DOCX and CKEditor HTML writers (`Tee` feeds both) |
+| `book_engine.py`, `book_writer.py` | Summary book (Full AI): outline, per-slide writing, number check; book DOCX format |
 | `layout_engine.py` | Geometry rules (`analyse`, `collect`); older PPTX → DOCX/HTML path with its own CLI |
 | `llm_planner.py` | One-slide LLM planner with validation and a single repair retry |
 | `evaluate.py` | Scoring against gold or silver (cached LLM) results |

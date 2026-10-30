@@ -36,6 +36,7 @@ from PIL import Image
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 
+import book_engine
 import layout_engine
 import report_engine
 
@@ -65,7 +66,9 @@ STEP_LLM = {"llm": "Menyusun layout: aturan + LLM untuk slide bertanda",   # lan
 WEIGHTS = (0.2, 0.55, 0.1, 0.15)
 # manual: aturan saja, slide bertanda diperbaiki di review; llm: planner auto (LLM untuk slide bertanda);
 # full: planner llm (LLM menyusun semua slide isi; cover/pembatas/penutup tetap aturan)
-CONVERT_MODES = {"manual": "rules", "llm": "auto", "full": "llm"}
+CONVERT_MODES = {"manual": "rules", "llm": "auto", "full": "llm", "book": None}
+# book: buku ringkasan (book_engine): AI menyusun bab/bagian dan meringkas tiap slide; tidak memakai section Predefine
+STEPS_BOOK = ["Merender slide PPT", "AI menyusun kerangka buku", "AI menulis isi per slide", "Membuat konten CKEditor"]
 
 # tanda report engine (rules_flags) -> (kenapa perlu dicek, prompt AI yang disarankan)
 FLAG_INFO = report_engine.FLAG_INFO
@@ -370,9 +373,12 @@ def register(app, work_dir):
         mode = (request.get_json(force=True, silent=True) or {}).get("mode", "manual")
         if mode not in CONVERT_MODES:
             return jsonify(error="mode tidak dikenal."), 400
-        steps = [STEP_LLM[mode] if mode in STEP_LLM and i == 1 else t for i, t in enumerate(STEPS)]
+        steps = STEPS_BOOK if mode == "book" else \
+            [STEP_LLM[mode] if mode in STEP_LLM and i == 1 else t for i, t in enumerate(STEPS)]
+        body = request.get_json(force=True, silent=True) or {}
         j.update(status="running", done=0, pct=0, phase=0, html="", error=None, mode=mode, llm_failed=[],
-                 steps=[{"t": t, "state": "wait"} for t in steps])
+                 steps=[{"t": t, "state": "wait"} for t in steps], title=str(body.get("title", "")).strip()[:300],
+                 docx=None, check=[])
         threading.Thread(target=_run, args=(j,), daemon=True).start()
         return jsonify(id=job_id, status="running")
 
@@ -393,6 +399,8 @@ def register(app, work_dir):
             tick(0, 0)
             j["render_done"].wait(timeout=900)
             tick(0, total)
+            if j["mode"] == "book":
+                return _run_book(j, tick, total)
 
             # 2. report engine memakai render yang sama: aturan saja, atau + LLM untuk slide bertanda
             def on_progress(fraction, _message):
@@ -407,6 +415,7 @@ def register(app, work_dir):
                 comments=True)
             j["results"], j["ai"] = report_fragments(j["id"], out, "report"), {}
             j["llm_failed"] = stats["llm_failed"]
+            j["docx"] = stats["docx"]
             tick(1, total)
 
             j["mapping"] = do_map(j)
@@ -415,6 +424,38 @@ def register(app, work_dir):
             j["html"] = build_ck_html(j["slides"], j["toc"], j["mapping"], j["results"])
             for i in range(1, total + 1):          # 4. membuat konten CKEditor
                 tick(3, i)
+            j.update(status="done", pct=100)
+            for st in j["steps"]:
+                st["state"] = "done"
+        except Exception as e:
+            j.update(status="error", error=str(e))
+
+    def _run_book(j, tick, total):
+        """Buku ringkasan: book_engine memakai render yang sama; isi CKEditor = HTML buku (bab dan bagian dari
+        AI, bukan pohon section Predefine). Slide dengan angka yang perlu dicek diberi komentar di DOCX."""
+        try:
+            # progress book_engine: 0.15 kerangka, 0.25..0.9 isi per slide, 0.92 tulis dokumen
+            def on_progress(fraction, _message):
+                if fraction < 0.25:
+                    tick(1, total if fraction >= 0.2 else 0)
+                elif fraction < 0.92:
+                    tick(2, min(total, round((fraction - 0.25) / 0.65 * total)))
+                else:
+                    tick(3, 0)
+
+            rendered = j["render"] == "done"
+            out = j["dir"] / "book"
+            stats = book_engine.convert_book(
+                j["src"], out / (Path(j["source"]).stem + " - Buku.docx"), render=rendered, work_dir=out,
+                slides_dir=j["dir"] / "slides" if rendered else None, progress=on_progress, title=j["title"],
+                html_path=out / "book.html", img_src=lambda p: f"/api/ck/file/{j['id']}/book/media/{p.name}")
+            j["html"] = (out / "book.html").read_text(encoding="utf-8").split("<body>\n", 1)[-1] \
+                .rsplit("\n</body>", 1)[0]
+            j["results"], j["ai"] = {}, {}
+            j["llm_failed"], j["check"], j["docx"] = stats["fallback"], stats["check"], stats["docx"]
+            j["book"] = {"title": stats["title"], "chapters": stats["chapters"], "used": stats["slides_used"],
+                         "skipped": len(stats["slides_skipped"])}
+            tick(3, total)
             j.update(status="done", pct=100)
             for st in j["steps"]:
                 st["state"] = "done"
@@ -433,7 +474,8 @@ def register(app, work_dir):
             return jsonify(error="Konversi belum selesai."), 409
         slides = [_public_slide(s, j["mapping"], j["results"]) for s in j["slides"]]
         return jsonify(html=j["html"], slides=slides, render=j["render"], mode=j["mode"], llm_failed=j["llm_failed"],
-                       docx=(j["dir"] / "report" / (Path(j["source"]).stem + ".docx")).exists())
+                       docx=bool(j.get("docx")) and Path(j["docx"]).exists(), check=j.get("check", []),
+                       book=j.get("book"))
 
     # ---- review: perbaiki slide bertanda (manual / AI / tandai OK / kembalikan hasil otomatis)
     def get_result(j, n):
@@ -522,12 +564,12 @@ def register(app, work_dir):
 
     @bp.get("/docx/<job_id>")
     def docx(job_id):
-        """DOCX hasil otomatis report engine (belum termasuk perbaikan di halaman review)."""
+        """DOCX hasil otomatis report engine / buku ringkasan (belum termasuk perbaikan di halaman review)."""
         j = get_job(job_id)
-        name = Path(j["source"]).stem + ".docx"
-        if j["status"] != "done" or not (j["dir"] / "report" / name).exists():
+        path = Path(j["docx"]) if j.get("docx") else None
+        if j["status"] != "done" or not (path and path.exists()):
             abort(404)
-        return send_from_directory(j["dir"] / "report", name, as_attachment=True)
+        return send_from_directory(path.parent, path.name, as_attachment=True)
 
     @bp.get("/render/<job_id>")
     def render_state(job_id):
@@ -543,9 +585,9 @@ def register(app, work_dir):
 
     @bp.get("/file/<job_id>/<path:name>")
     def job_file(job_id, name):
-        """Gambar hasil report engine: report/media/... dan ai/s<n>_<k>/media/..."""
+        """Gambar hasil report engine / buku: report/media/..., book/media/... dan ai/s<n>_<k>/media/..."""
         j = get_job(job_id)
-        if not re.fullmatch(r"(report|ai/s\d+_\d+)/media/[\w.\-]+", name):
+        if not re.fullmatch(r"(report|book|ai/s\d+_\d+)/media/[\w.\-]+", name):
             abort(404)
         return send_from_directory(j["dir"], name)
 

@@ -11,6 +11,7 @@ from pathlib import Path
 from flask import Flask, jsonify, render_template, request, send_file
 
 import bedrock_llm
+import book_engine  # PPTX -> DOCX buku ringkasan (Full AI)
 import converter as c  # your original code
 import ckeditor_flow  # PPT -> CKEditor (seamless editing)
 import layout_engine  # PPTX -> DOCX/HTML dari geometri slide (tanpa LLM)
@@ -107,6 +108,28 @@ def run_report_job(job_id, pptx: Path, provider, model, use_llm, include_hidden=
         job.update(status="error", error=str(e))
 
 
+def run_book_job(job_id, pptx: Path, provider, model, include_hidden=False):
+    """Buku ringkasan (Full AI): render -> AI kerangka buku -> AI isi per slide -> DOCX."""
+    job = JOBS[job_id]
+    bounds = [0.15, 0.25, 0.92, 1.01]   # batas progress (lihat book_engine.convert_book) -> indeks langkah di UI
+
+    def on_progress(fraction, message):
+        job["step"] = next(i for i, b in enumerate(bounds) if fraction < b)
+        job["detail"] = message
+
+    try:
+        job["status"] = "running"
+        docx_path = WORK / job_id / f"{pptx.stem} - Buku.docx"
+        stats = book_engine.convert_book(
+            pptx, docx_path, provider=provider, model=model, work_dir=WORK / job_id / "build",
+            include_hidden=include_hidden, progress=on_progress,
+        )
+        job.update(status="done", step=len(job["steps"]), file=str(docx_path), name=docx_path.name, stats=stats)
+    except Exception as e:
+        traceback.print_exc()
+        job.update(status="error", error=str(e))
+
+
 @app.get("/")
 def index():
     return render_template("index.html")
@@ -134,6 +157,18 @@ def convert():
     use_llm = request.form.get("use_llm", "true") == "true"
     provider = request.form.get("provider", "bedrock")
     model = request.form.get("model") or bedrock_llm.DEFAULT_MODEL
+
+    if request.form.get("engine") == "book":
+        # buku ringkasan selalu memakai LLM (Full AI); hanya PPTX
+        if is_pdf:
+            return jsonify(error="Buku ringkasan hanya untuk file .pptx."), 400
+        steps = ["Render slides", "AI plans the book outline", "AI writes each slide", "Write Word document"]
+        JOBS[job_id] = dict(id=job_id, status="queued", step=0, source=f.filename, steps=steps,
+                            llm_step=-1, llm_chars=0, engine="book", detail="")
+        include_hidden = request.form.get("include_hidden", "false") == "true"
+        threading.Thread(target=run_book_job, args=(job_id, pptx, provider, model, include_hidden),
+                         daemon=True).start()
+        return jsonify(id=job_id)
 
     # layout & report engine hanya untuk PPTX; PDF tetap lewat Docling
     if request.form.get("engine") == "report" and not is_pdf:
