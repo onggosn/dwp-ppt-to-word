@@ -30,7 +30,7 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-LLM features use Claude on AWS Bedrock with a Bedrock API key: set `AWS_BEARER_TOKEN_BEDROCK` and `AWS_REGION` (default `us-east-1`), exported or in a `.env` file in the repo root (git-ignored); `BEDROCK_MODEL` overrides the default model `us.anthropic.claude-opus-4-6-v1`. They are optional: `--planner rules` never calls an LLM.
+LLM features use Claude on AWS Bedrock with a Bedrock API key: set `AWS_BEARER_TOKEN_BEDROCK` and `AWS_REGION` (default `us-east-1`), exported or in a `.env` file in the repo root (git-ignored; copy `.env.example`); `BEDROCK_MODEL` overrides the default model `global.anthropic.claude-opus-4-6-v1`. They are optional: `--planner rules` never calls an LLM.
 
 ## Usage
 

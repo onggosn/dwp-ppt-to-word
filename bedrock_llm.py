@@ -3,8 +3,8 @@
 Env (export, atau tulis di file .env di root repo):
   AWS_BEARER_TOKEN_BEDROCK  Bedrock API key (wajib)
   AWS_REGION                region Bedrock, default us-east-1
-  BEDROCK_MODEL             inference profile, default us.anthropic.claude-opus-4-6-v1
-                            (model terbaik yang aktif di akun ini; prefix us./global. harus cocok dengan region)
+  BEDROCK_MODEL             inference profile, default global.anthropic.claude-opus-4-6-v1
+                            (model terbaik yang aktif di akun ini; global. jalan di semua region; us./eu./apac. hanya di region-nya)
 """
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ try:   # .env di root repo (tidak ikut git); variabel yang sudah di-export tetap
 except ImportError:
     pass
 
-DEFAULT_MODEL = os.environ.get("BEDROCK_MODEL") or "us.anthropic.claude-opus-4-6-v1"
+DEFAULT_MODEL = os.environ.get("BEDROCK_MODEL") or "global.anthropic.claude-opus-4-6-v1"
 EFFORT = "medium"
 MAX_TOKENS = 64000
 

@@ -11,7 +11,7 @@ Alur:
   5. opsional    LLM hanya merapikan teks per paragraf (JSON in/out, divalidasi); layout tidak disentuh LLM.
 
 CLI:
-    python layout_engine.py docs/test.pptx -o work/test.docx [--llm bedrock --model us.anthropic.claude-opus-4-6-v1]
+    python layout_engine.py docs/test.pptx -o work/test.docx [--llm bedrock --model global.anthropic.claude-opus-4-6-v1]
 """
 from __future__ import annotations
 
