@@ -2,10 +2,26 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "flask-app",
+      "name": "backend",
       "runtimeExecutable": ".venv/Scripts/python.exe",
-      "runtimeArgs": ["app.py"],
-      "port": 5001
+      "runtimeArgs": [
+        "backend/app.py"
+      ],
+      "port": 5003
+    },
+    {
+      "name": "frontend",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "--prefix",
+        "frontend",
+        "run",
+        "serve-poc",
+        "--",
+        "--port",
+        "8090"
+      ],
+      "port": 8090
     }
   ]
 }

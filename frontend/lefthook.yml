@@ -1,0 +1,12 @@
+pre-commit:
+  commands:
+    lint:
+      glob: "*.{ts,js,vue}"
+      skip_empty: true
+      run: npx eslint --ext .vue,.js,.ts {staged_files}
+
+commit-msg:
+  commands:
+    validate-commit-msg:
+      run: |
+        node scripts/validate-commit-msg.js {1}

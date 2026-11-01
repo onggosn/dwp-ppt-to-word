@@ -1,7 +1,23 @@
-/docs/output
-/docs/Report_Output.docx
+# secrets
+.env
+!.env.example
 
-/__pycache__
-/.venv
+# Python
+__pycache__/
+/.venv/
 
-/work
+# backend output: uploads, conversions, LLM cache
+/backend/work/
+
+# frontend (also has its own .gitignore)
+/frontend/node_modules/
+
+# local leftovers from earlier experiments (not part of this project)
+/docs/
+/train/
+/work/
+/build/
+/dist/
+/.venv-addin/
+/weights/
+/runs/
