@@ -2,36 +2,19 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "flask-app",
+      "name": "backend",
       "runtimeExecutable": ".venv/Scripts/python.exe",
       "runtimeArgs": [
-        "app.py"
-      ],
-      "port": 5001
-    },
-    {
-      "name": "flask-app-mac",
-      "runtimeExecutable": ".venv/bin/python",
-      "runtimeArgs": [
-        "-c",
-        "import app; app.app.run(threaded=True, port=5002)"
-      ],
-      "port": 5002
-    },
-    {
-      "name": "poc-api",
-      "runtimeExecutable": ".venv/Scripts/python.exe",
-      "runtimeArgs": [
-        "poc_api.py"
+        "backend/app.py"
       ],
       "port": 5003
     },
     {
-      "name": "new-dwp-poc",
+      "name": "frontend",
       "runtimeExecutable": "npm",
       "runtimeArgs": [
         "--prefix",
-        "../new-dwp",
+        "frontend",
         "run",
         "serve-poc",
         "--",

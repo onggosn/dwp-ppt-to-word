@@ -1,29 +1,23 @@
-/docs/output
-/docs/Report_Output.docx
+# secrets
+.env
+!.env.example
 
-/__pycache__
-/.venv
-/.env
-
-# work/ dibuka hanya untuk folder label dataset; sisanya tetap diabaikan
-/work/*
-!/work/dataset_prep/
-!/work/dataset_prep2/
-/work/dataset_prep*/images/
-/work/dataset_prep*/annotated/
-/work/dataset_prep*/**/*.png
-/work/dataset_prep*/**/*.jpg
-
-# model, gambar, dan output training tidak ikut di git
-/train/*.pt
-/train/**/*.png
-/train/**/*.cache
-/train/dataset_ppt/images/
-/runs/
-/weights/
-
-# add-in build (addin/build.py)
-/.venv-addin/
-/dist/
-/build/
+# Python
 __pycache__/
+/.venv/
+
+# backend output: uploads, conversions, LLM cache
+/backend/work/
+
+# frontend (also has its own .gitignore)
+/frontend/node_modules/
+
+# local leftovers from earlier experiments (not part of this project)
+/docs/
+/train/
+/work/
+/build/
+/dist/
+/.venv-addin/
+/weights/
+/runs/

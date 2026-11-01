@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "module": "esnext",
+    "target": "es2019",
+    "lib": ["es2019", "dom", "dom.iterable"],
+    "moduleResolution": "node",
+    "sourceMap": true,
+    "declaration": true,
+    "outDir": "./build",
+    "strict": false,
+    "allowJs": true,
+    "esModuleInterop": true
+  },
+  "include": [
+    "src/**/*",
+    "global.d.ts",
+    "upload-document.js"
+  ]
+}

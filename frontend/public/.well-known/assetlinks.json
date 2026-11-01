@@ -1,0 +1,8 @@
+[{
+  "relation": ["delegate_permission/common.handle_all_urls"],
+  "target": {
+    "namespace": "android_app",
+    "package_name": "bi.hybrid.dwp",
+    "sha256_cert_fingerprints": ["01:7F:FD:3E:95:AE:12:DB:53:62:9E:B6:F2:0E:99:16:CE:96:B4:8B:D2:19:F9:4B:A8:69:63:90:E8:B2:67:7F","C5:A5:93:EC:83:EC:9E:CF:2B:A4:9A:73:BE:37:06:11:C5:D7:91:B8:A4:5F:DF:79:9B:CA:6C:88:EB:D7:A0:B2"]
+  }
+}]

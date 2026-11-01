@@ -1,0 +1,203 @@
+:root {
+	--margin-content-level-1: 15px;
+	--margin-content-level-2: calc(var(--margin-content-level-1) + 10px);
+	--margin-content-level-3: calc(var(--margin-content-level-2) + 10px);
+	--margin-content-level-4: calc(var(--margin-content-level-3) + 10px);
+	--margin-content-level-5: calc(var(--margin-content-level-4) + 10px);
+}
+
+@media print {
+	body {
+		margin: 0 !important;
+	}
+}
+
+ul {
+    margin-block-start: 1em;
+    margin-block-end: 1em;
+}
+
+ol,
+ul {
+	/* padding-inline-start: 25px; */
+	padding-left: 1.5em;
+	margin-left: 0;
+}
+
+li p {
+	margin-block-end: 0px;
+	margin-block-start: 0px;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5 {
+	margin-block-start: 0px;
+	margin-block-end: 0px;
+}
+
+.type-heading {
+	list-style-type: none;
+}
+
+.title-level-1,
+.title-level-2,
+.title-level-3,
+.title-level-4,
+.title-level-5 {
+	margin-top: 1em;
+	font-weight: bold;
+	width: fit-content;
+	clear: both;
+}
+
+
+.content-level-1,
+.content-level-2,
+.content-level-3,
+.content-level-4,
+.content-level-5 {
+	/* margin-top: 5px; */
+	width: auto;
+	display: block;
+}
+
+.content-level-1 {
+	margin-left: var(--margin-content-level-1);
+}
+
+.content-level-2 {
+	margin-left: var(--margin-content-level-2);
+}
+
+.content-level-3 {
+	margin-left: var(--margin-content-level-3);
+}
+
+.content-level-4 {
+	margin-left: var(--margin-content-level-4);
+}
+
+.content-level-5 {
+	margin-left: var(--margin-content-level-5);
+}
+
+.title-document {
+	font-weight: bold;
+	margin-bottom: 8mm;
+	width: fit-content;
+}
+
+li:has(h1)::marker {
+	font-size: 1.5em;
+	font-weight: bold;
+}
+
+li:has(h2)::marker {
+	font-size: 1.5em;
+	font-weight: bold;
+}
+
+li:has(h3)::marker {
+	font-size: 1.17em;
+	font-weight: bold;
+}
+
+li:has(h4)::marker {
+	font-size: 1.33em;
+	font-weight: bold;
+}
+
+li:has(h5)::marker {
+	font-size: 0.83em;
+	font-weight: bold;
+}
+
+li:has(h5)::marker {
+	font-size: 0.67em;
+	font-weight: bold;
+}
+
+.ck.ck-content p.spacing-1 {
+	line-height: 1.5em;
+}
+
+.ck.ck-content p.spacing-1-5 {
+	line-height: 2em;
+}
+
+.ck.ck-content p.spacing-2 {
+	line-height: 2.5em;
+}
+
+.main-container {
+	--ckeditor5-preview-sidebar-width: 270px;
+	font-family: "Frutiger 45 Light";
+	margin-left: auto;
+	margin-right: auto;
+}
+
+.ck-content {
+	/* font-size: 12px; */
+	line-height: 1.6;
+	word-break: break-word;
+	font-family: "Frutiger 45 Light", "Segoe UI Symbol";
+}
+
+.ck-content .table thead {
+	display: table-row-group;
+}
+
+.ck-content .table tr {
+	break-inside: avoid;
+	break-after: auto;
+}
+
+.text-version-1 {
+    display: flex;
+    margin-left: 39.5rem;
+    margin-bottom: 3rem;
+    justify-content: center;
+}
+
+.chip-version {
+    display: inline-flex;
+    padding: 5px 8px;
+    font-weight: bold;
+    border-radius: 15px;
+    background-color: #e0e0e0;
+    font-size: 12px;
+    text-align: center;
+    font-family: 'Poppins';
+    align-items: center;
+    justify-content: center;
+    white-space: nowrap;
+    min-width: fit-content;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+  
+.blank-space {
+	height: 90px;
+}
+
+.section-header-letter{
+	margin-left: -5px;
+}
+
+.table-width-full{
+	width: 100%;
+}
+
+/* .content-level-1:has(ul li){
+	width: 100%;
+} */
+
+.ck-body, 
+.ck-body-wrapper, 
+.ck.ck-balloon-panel {
+	z-index: 10000 !important;
+}

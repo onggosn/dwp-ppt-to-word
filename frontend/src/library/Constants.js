@@ -1,0 +1,4 @@
+export default {
+  LICENSE_KEY_PDFTRON:
+    "Bank of Indonesia (bi.go.id):ENTERP:Digital Workplace DMP (Decision Making Process)::B+:AMS(20240108):79A532FD0417E60A0360B13AC982527120617FD5F900DD735C4C7DBA54D530DE5AB2B6F5C7",
+};

@@ -1,0 +1,11 @@
+# backend: PPTX -> Word (Full AI summary book) + POC API
+flask
+python-docx>=1.2      # Word comments (doc.add_comment)
+python-pptx
+Pillow
+pymupdf               # slide render through LibreOffice (PDF -> PNG) when PowerPoint is missing
+anthropic[bedrock]    # Claude on Amazon Bedrock
+python-dotenv         # reads backend/.env
+
+# optional: local models instead of Bedrock (provider="ollama")
+# ollama
