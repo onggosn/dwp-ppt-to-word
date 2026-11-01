@@ -59,31 +59,63 @@ Both are also in `.claude/launch.json` (`backend`, `frontend`). POC mode skips D
 
 ### Page and API
 
-What happens from the page to the Word file (`frontend/src/v2/views/poc/PptToWordView.vue` and `backend/app.py`).
+From the page to the Word file (`frontend/src/v2/views/poc/PptToWordView.vue` and `backend/app.py`).
 
 ```mermaid
-flowchart TD
-    start([User opens the PPT to Word page]) --> load["Frontend: GET /documents/:id"]
-    load --> hasPpt{PPT uploaded?}
-    hasPpt -- no --> pick[User drops or browses a .pptx]
-    pick --> fcheck{"Frontend check: access, .pptx, max 150MB"}
-    fcheck -- fail --> modal[Error modal] --> pick
-    fcheck -- ok --> upload["POST /documents/:id/ppt"]
-    upload --> bcheck{"Backend check: .pptx, max 150MB, readable, has slides"}
-    bcheck -- fail --> modal
-    bcheck -- ok --> save["Save PPT, delete the previous run, status = converting"]
-    save --> thread["Background thread: book_engine.convert_book"]
-    save --> poll
-    hasPpt -- yes --> poll{Conversion status?}
-    thread -. "progress callback updates state.json" .-> poll
-    poll -- converting --> progress["Show steps, slide counter, ETA; poll again after 2 s"] --> poll
-    poll -- error --> failed[Show the error] --> replace
-    poll -- complete --> ready["Notification: Word File is Ready"]
-    ready --> download["GET /documents/:id/word: Word with review comments"]
-    download --> revise[User checks the comments and revises in Word, exports PDF]
-    revise --> pdf["POST /documents/:id/final-pdf"] --> done([Status: Completed])
-    ready -. Replace PPT .-> replace["Replace dialog and confirm; warns if the Word file was downloaded"]
-    replace --> upload
+sequenceDiagram
+    autonumber
+    actor U as User
+    participant FE as Frontend<br/>PptToWordView.vue
+    participant API as Backend<br/>app.py
+    participant BG as Background thread<br/>book_engine.convert_book
+
+    U->>FE: Open /app/v2/ppt-to-word
+    FE->>API: GET /api/poc/documents/:id
+    API-->>FE: State: PPT, conversion, Word, final PDF
+    U->>FE: Drop or browse a .pptx
+    FE->>FE: Check access, .pptx, max 150MB
+    alt Check fails
+        FE-->>U: Error modal
+    else Check passes
+        FE->>API: POST /api/poc/documents/:id/ppt (multipart)
+        API->>API: Check .pptx, max 150MB, readable, has slides
+        alt Invalid file
+            API-->>FE: 400 / 413 with code and message
+            FE-->>U: Error modal
+        else Valid file
+            API->>API: Save PPT, delete the previous run, status = converting
+            API-)BG: Start the conversion
+            API-->>FE: State: converting
+        end
+    end
+
+    loop Every 2 s while converting
+        BG-)API: progress(fraction, message), saved in state.json
+        FE->>API: GET /api/poc/documents/:id
+        API-->>FE: Steps, slide counter, AI slide counter, ETA
+    end
+
+    alt Conversion complete
+        BG->>API: Word file and stats, status = complete
+        FE-->>U: Notification: Word File is Ready
+        U->>FE: Download Word
+        FE->>API: GET /api/poc/documents/:id/word
+        API-->>U: .docx with review comments by Digital Workplace
+        U->>U: Check the comments, revise in Word, export to PDF
+        U->>FE: Upload Final PDF
+        FE->>API: POST /api/poc/documents/:id/final-pdf
+        API-->>FE: Status: Completed
+    else Conversion error
+        BG->>API: status = error, with the message
+        FE-->>U: Show the error, offer Replace PPT
+    end
+
+    opt Replace PPT
+        U->>FE: Replace PPT, pick a new file
+        FE-->>U: Confirm, warns if the Word file was already downloaded
+        U->>FE: Replace & Convert
+        FE->>API: POST /api/poc/documents/:id/ppt, the conversion starts again
+    end
 ```
 
 ### Conversion engine
@@ -91,28 +123,54 @@ flowchart TD
 `book_engine.convert_book`, which runs in the background thread above.
 
 ```mermaid
-flowchart TD
-    s([convert_book]) --> pp{PowerPoint available?}
-    pp -- "yes (Windows)" --> rpp[Render slides with PowerPoint] --> read
-    pp -- no --> lo{"LibreOffice and PyMuPDF available?"}
-    lo -- "yes (macOS / Linux)" --> rlo["LibreOffice: PPTX to PDF, PyMuPDF: PDF page to PNG"] --> same{"PDF pages = slides?"}
-    same -- yes --> read
-    same -- no --> orig
-    lo -- no --> orig[Use the original images inside the PPTX] --> read
-    read["Read slide elements: text, tables, pictures, with coordinates"] --> outline["AI: book outline from the whole deck, text only"]
-    outline --> ok1{Valid answer?}
-    ok1 -- "no, also after 1 fix attempt" --> fail([Conversion error])
-    ok1 -- yes --> items["Per slide, 4 in parallel: AI writes a topic box or text, with the slide image"]
-    items --> ok2{Valid answer?}
-    ok2 -- yes --> nums
-    ok2 -- "no, also after 1 fix attempt" --> fb["Fallback: slide title and whole slide image, plus a warning"] --> nums
-    nums{"Numbers in the AI text that are not in the slide text?"}
-    nums -- no --> write
-    nums -- yes --> verify[AI checks those numbers against the slide image] --> verdict{Verdict}
-    verdict -- sure --> write
-    verdict -- "unsure / absent" --> flag[Mark the number for a comment] --> write
-    write["Write Word: chapters, sections, topic boxes, charts cropped from the render"] --> comments["Add Word comments by Digital Workplace: flagged numbers and warnings"]
-    comments --> e([Word file ready])
+sequenceDiagram
+    autonumber
+    participant BE as book_engine
+    participant SR as slide_reader
+    participant R as PowerPoint or<br/>LibreOffice
+    participant AI as Claude on Bedrock<br/>llm.py, bedrock_llm.py
+    participant W as book_writer<br/>docx_common.py
+
+    BE->>SR: render_slides(pptx)
+    alt PowerPoint available (Windows)
+        SR->>R: Export every slide to PNG
+        R-->>SR: slideN.png
+    else LibreOffice and PyMuPDF available (macOS / Linux)
+        SR->>R: soffice: PPTX to PDF
+        R-->>SR: PDF, then PyMuPDF turns each page into slideN.png
+    else Neither, or PDF pages differ from the slide count
+        SR-->>BE: No render, use the original images in the PPTX
+    end
+    BE->>SR: Read slide elements: text, tables, pictures, coordinates
+    SR-->>BE: Elements with ids per slide
+
+    Note over BE,AI: Every AI call: cache first (work/book_cache), then validate, one fix attempt if invalid
+
+    BE->>AI: Outline prompt for the whole deck, text only
+    AI-->>BE: Book title, chapters, sections, slides per section (topic or text)
+    opt Still invalid after the fix attempt
+        BE-->>BE: Raise error, the conversion fails
+    end
+
+    loop Every slide in the outline, 4 in parallel
+        BE->>AI: Topic or text prompt, with the slide image
+        AI-->>BE: Title, figures (element ids), blocks
+        opt Still invalid after the fix attempt
+            BE->>BE: Fallback: slide title and whole slide image, plus a warning
+        end
+    end
+
+    BE->>BE: Find numbers in the AI text that are not in the slide text
+    opt Such numbers found
+        loop Each slide with such numbers, 4 in parallel
+            BE->>AI: Verify prompt with the numbers and the slide image
+            AI-->>BE: Verdict per number: sure, unsure or absent
+        end
+    end
+
+    BE->>W: Write the book: chapters, sections, topic boxes, charts cropped from the render
+    W->>W: Word comments by Digital Workplace for unsure / absent numbers and warnings
+    W-->>BE: .docx and the number of comments
 ```
 
 Every AI call (outline, per slide, number check) looks in `backend/work/book_cache` first. The answer is validated (JSON shape, slide numbers and element ids that exist on the slide, required fields, figure and caption limits), and an invalid answer gets one fix attempt with the errors sent back to the AI.
