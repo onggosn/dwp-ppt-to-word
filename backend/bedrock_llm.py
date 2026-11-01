@@ -1,6 +1,6 @@
 """Claude di Amazon Bedrock (bedrock-runtime, inference profile) dengan Bedrock API key.
 
-Env (export, atau tulis di file .env di root repo):
+Env (export, atau tulis di backend/.env):
   AWS_BEARER_TOKEN_BEDROCK  Bedrock API key (wajib)
   AWS_REGION                region Bedrock, default us-east-1
   BEDROCK_MODEL             inference profile, default global.anthropic.claude-opus-4-6-v1
@@ -22,6 +22,7 @@ except ImportError:
     pass
 
 DEFAULT_MODEL = os.environ.get("BEDROCK_MODEL") or "global.anthropic.claude-opus-4-6-v1"
+BEDROCK_API_VERSION = "bedrock-2023-05-31"
 EFFORT = "medium"
 MAX_TOKENS = 64000
 
@@ -60,6 +61,9 @@ def generate(prompt: str, image: Optional[bytes] = None, model: str = DEFAULT_MO
         model=model,
         max_tokens=MAX_TOKENS,
         messages=[{"role": "user", "content": content}],
+        # SDK anthropic >= 2.x mengirim versi API baru ("2026-10-21") yang ditolak Bedrock untuk
+        # Opus 4.5 / 4.6 ("Invalid API version"); versi Bedrock ini diterima semua model Claude
+        extra_body={"anthropic_version": BEDROCK_API_VERSION},
         **extra,
     ) as stream:
         for piece in stream.text_stream:
