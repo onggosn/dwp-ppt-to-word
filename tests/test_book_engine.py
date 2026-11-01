@@ -123,9 +123,18 @@ class PipelineTest(unittest.TestCase):
             item = next(p for p in doc.paragraphs if p.text == "a.\tTeks miring")
             self.assertEqual(label.paragraph_format.left_indent.twips, bw.BODY_INDENT)
             self.assertEqual(item.paragraph_format.left_indent.twips, bw.ITEM_TEXT)   # list masuk ke dalam
-            # angka 98,76 tidak ada di slide -> komentar Word
+            # angka 98,76 tidak ada di slide -> komentar Word di angka itu
             self.assertEqual(stats["comments"], 1)
-            self.assertTrue(any(el.tag == qn("w:commentRangeStart") for el in doc.element.body.iter()))
+            # komentar menempel tepat pada angkanya, bukan pada judul kotak
+            inside, covered = False, ""
+            for el in doc.element.body.iter():
+                if el.tag == qn("w:commentRangeStart"):
+                    inside = True
+                elif el.tag == qn("w:commentRangeEnd"):
+                    inside = False
+                elif inside and el.tag == qn("w:t"):
+                    covered += el.text
+            self.assertEqual(covered, "98,76")
 
 
 if __name__ == "__main__":

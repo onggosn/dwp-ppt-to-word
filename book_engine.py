@@ -59,7 +59,7 @@ MAX_FIGURES = 5               # panel per kotak
 SIDE_ASPECT = 1.1             # gambar gabungan (satu panel) di bawah rasio lebar/tinggi ini ditaruh di samping butir
 PANEL_WIDE_ASPECT = 3.5       # panel terpisah di atas rasio ini (mis. tabel lebar) memakai seluruh lebar kotak
 FIX_ATTEMPTS = 1
-MAX_NUMBER_NOTES = 6          # angka yang dikutip satu per satu di komentar review
+MAX_NUMBER_NOTES = 12         # angka yang diberi komentar sendiri (tepat di angkanya); sisanya disebut di kotak
 NUMBER_CONTEXT_CHARS = 45     # panjang potongan kalimat di kiri/kanan angka
 BLOCK_TYPES = {"heading", "label", "para", "bullet", "item", "table", "figure"}
 PANEL_BLOCK_TYPES = {"para", "bullet", "item"}
@@ -274,6 +274,7 @@ class Item:
     focus: str = ""
     result: dict = field(default_factory=dict)
     warnings: list = field(default_factory=list)
+    numbers: list = field(default_factory=list)    # angka di teks buku yang tidak ada di teks slide
     source: str = "llm"            # llm | cache | fallback
 
 
@@ -831,8 +832,18 @@ def write_book(outline: dict, items: list, slides: dict, docx_path: Path, media_
                     w.topic(res.get("title", "").strip(), *topic_panels(slide, res, blocks, aspect, fig))
                 else:
                     w.blocks(blocks)
-                if comments and it.warnings:
-                    docx.comment(start, [f"Slide {slide.n}: perlu dicek."] + ["- " + x for x in it.warnings])
+                if not comments:
+                    continue
+                notes = list(it.warnings)
+                for k, num in enumerate(it.numbers):
+                    if k < MAX_NUMBER_NOTES and docx.comment_number(start, num, [
+                            f'Angka "{num}" tidak ada di teks slide {slide.n}: mungkin dibaca dari grafik, atau '
+                            "salah tafsir. Cocokkan dengan slide."]):
+                        n_comments += 1
+                    else:
+                        notes.append(f'angka "{num}" tidak ada di teks slide (cocokkan dengan slide)')
+                if notes:
+                    docx.comment(start, [f"Slide {slide.n}: perlu dicek."] + ["- " + x for x in notes])
                     n_comments += 1
     docx.save(docx_path)
     return n_comments
@@ -905,13 +916,7 @@ def convert_book(
         if it.source == "fallback":
             continue
         text = item_text(it.result)
-        missing = unknown_numbers(text, number_set(by_n[it.slide].source_text()))
-        if missing:
-            it.warnings.append(f"Angka di teks buku yang tidak ada di teks slide {it.slide} (mungkin dibaca dari "
-                               "grafik, atau salah tafsir); cocokkan dengan slide:")
-            it.warnings += [f'angka "{n}": «{number_context(text, n)}»' for n in missing[:MAX_NUMBER_NOTES]]
-            if len(missing) > MAX_NUMBER_NOTES:
-                it.warnings.append("angka lain: " + ", ".join(missing[MAX_NUMBER_NOTES:]))
+        it.numbers = unknown_numbers(text, number_set(by_n[it.slide].source_text()))
 
     progress(0.92, "Menulis dokumen Word")
     page = BookHtmlWriter(img_src) if img_src else BookHtmlWriter()
@@ -922,7 +927,9 @@ def convert_book(
     used = {it.slide for it in items}
     report = {"outline": outline, "items": [
         {"slide": it.slide, "chapter": it.chapter + 1, "section": it.section + 1, "style": it.style,
-         "focus": it.focus, "source": it.source, "warnings": it.warnings, "result": it.result} for it in items]}
+         "focus": it.focus, "source": it.source, "warnings": it.warnings,
+         "numbers": [{"number": n, "context": number_context(item_text(it.result), n)} for n in it.numbers],
+         "result": it.result} for it in items]}
     (work / "book.json").write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
     progress(1.0, "Selesai")
     return {
@@ -936,7 +943,7 @@ def convert_book(
         "seconds": {"render": round(t_render - t0, 1), "outline": round(t_outline - t_render, 1),
                     "write": round(t_items - t_outline, 1), "docx": round(time.time() - t_items, 1)},
         "docx": str(docx_path), "html": str(html_path) if html_path else None, "book": str(work / "book.json"),
-        "check": sorted({it.slide for it in items if it.warnings}),
+        "check": sorted({it.slide for it in items if it.warnings or it.numbers}),
     }
 
 

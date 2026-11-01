@@ -15,6 +15,7 @@ Teks blok boleh memakai **tebal** dan *miring* (Markdown) dari LLM.
 """
 from __future__ import annotations
 
+import copy
 import html
 import re
 from pathlib import Path
@@ -25,8 +26,9 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Emu, Pt, Twips
+from docx.text.paragraph import Paragraph
 
-from report_writer import (DEFAULT_TEMPLATE, _abstract_num, _cell_props, _el, _picture_size, _runs_html,
+from report_writer import (DEFAULT_TEMPLATE, REVIEWER, REVIEWER_INITIALS, _abstract_num, _cell_props, _el, _picture_size, _runs_html,
                            _style_run, _table_props, html_document, img_data_uri, review_comment, review_mark)
 
 TEXT_W = 9020                         # lebar teks A4 (twips), sama dengan report_writer
@@ -320,9 +322,48 @@ class BookWriter:
     def comment(self, start: int, lines: list):
         review_comment(self.doc, start, lines)
 
+    def comment_number(self, start: int, number: str, lines: list) -> bool:
+        """Komentar Word tepat pada angka `number` (kemunculan pertama sejak mark()); False kalau tidak ketemu
+        di satu run (mis. terpotong format), supaya pemanggil bisa menaruhnya di komentar kotak."""
+        pat = re.compile(r"(?<![\d.,])" + re.escape(number) + r"(?![\d]|[.,]\d)")
+        for el in list(self.doc.element.body)[start:]:
+            for p_el in el.iter(qn("w:p")):
+                for run in Paragraph(p_el, self.doc._body).runs:
+                    m = pat.search(run.text)
+                    if m:
+                        target = _split_run(run, m.start(), m.end())
+                        c = self.doc.add_comment([target], lines[0], REVIEWER, REVIEWER_INITIALS)
+                        for line in lines[1:]:
+                            c.add_paragraph(line)
+                        return True
+        return False
+
     def save(self, path: Path):
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         self.doc.save(str(path))
+
+
+def _split_run(run, a: int, b: int):
+    """Pecah run jadi [teks[:a]] [teks[a:b]] [teks[b:]] dengan format sama; kembalikan run tengah."""
+    text = run.text
+    if a == 0 and b == len(text):
+        return run
+
+    def clone(t: str):
+        el = copy.deepcopy(run._r)
+        for child in list(el):
+            if child.tag != qn("w:rPr"):
+                el.remove(child)
+        r = type(run)(el, run._parent)
+        r.text = t
+        return el
+
+    if a > 0:
+        run._r.addprevious(clone(text[:a]))
+    if b < len(text):
+        run._r.addnext(clone(text[b:]))
+    run.text = text[a:b]
+    return run
 
 
 def _cant_split(row):
