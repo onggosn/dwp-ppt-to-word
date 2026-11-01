@@ -300,12 +300,12 @@ def collect(shapes, W: int, H: int, tf=None) -> list:
         box = Box("text", x / W, y / H, w / W, h / H, name=s.name or "")
         if s.shape_type == MSO_SHAPE_TYPE.PICTURE or (
                 s.shape_type == MSO_SHAPE_TYPE.PLACEHOLDER and hasattr(s, "image")):
+            box.kind = "picture"
             try:
                 img = s.image
-                box.kind = "picture"
                 box.images = [(img.blob, img.ext, box.w * box.h)]
             except Exception:
-                continue
+                pass                  # gambar tertaut (tanpa data di PPTX): diambil dari render, seperti chart
         elif getattr(s, "has_table", False) and s.has_table:
             box.kind = "table"
             box.rows = [[_clean(c.text, vt="\n").strip() for c in r.cells] for r in s.table.rows]

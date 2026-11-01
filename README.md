@@ -61,7 +61,7 @@ Besides the DOCX, the engine writes `plans.json` (the plan of every slide) and `
 
 `book_engine.py` turns a deck into a condensed **book** like `docs/new/RDGB_Maret 2026_Buku 2d ....pdf` (made from the deck in the same folder). Unlike the report engine, the AI decides the structure and writes the text:
 
-1. **Outline**: one text-only call over the whole deck picks the book title, chapters and sections, and which slides go where. Each slide is either a `topic` (box with key-message title, one image of the slide's charts, summary bullets) or `text` (near-verbatim text: conclusions, policy recommendations, with numbered points, Word tables from the slide's own table data). Cover, agenda, dividers, appendix and working notes are left out.
+1. **Outline**: one text-only call over the whole deck picks the book title, chapters and sections, and which slides go where. Each slide is either a `topic` (box with key-message title and one row per chart/table of the slide: the chart cropped on the left, its own bullets on the right; wide tables and infographics span the box with their bullets below, as in `docs/new/RDGB_Maret 2026_Buku 1a Asesmen Moneter.pdf`) or `text` (near-verbatim text: conclusions, policy recommendations, with numbered points, Word tables from the slide's own table data). Cover, agenda, dividers, appendix and working notes are left out.
 2. **Per slide**: one call with the slide render and its elements. The AI only names which elements form the chart area; the image is cropped from the render, so charts are never redrawn.
 3. **Number check**: any number in the AI text that is not in the slide's text gets a Word comment, since it may have been read off a chart or mistyped.
 

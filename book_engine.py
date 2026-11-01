@@ -48,19 +48,22 @@ from report_writer import DEFAULT_TEMPLATE, Tee
 HERE = Path(__file__).resolve().parent
 DEFAULT_CACHE = HERE / "work" / "book_cache"
 DEFAULT_MODEL = bedrock_llm.DEFAULT_MODEL
-BOOK_VERSION = "3"            # naikkan kalau prompt / skema berubah supaya cache lama tidak dipakai
+BOOK_VERSION = "4"            # naikkan kalau prompt / skema berubah supaya cache lama tidak dipakai
 
 OUTLINE_SLIDE_CHARS = 1400    # teks per slide di prompt kerangka
 OUTLINE_EL_CHARS = 350
 ITEM_EL_CHARS = 2500          # teks per elemen di prompt per slide
 ITEM_TABLE_ROWS = 6
 PREV_TAIL_CHARS = 500         # akhir teks slide sebelumnya (untuk slide lanjutan)
-MAX_FIGURES = 3
-SIDE_ASPECT = 1.1             # gambar dengan rasio lebar/tinggi di bawah ini ditaruh di samping butir
+MAX_FIGURES = 5               # panel per kotak
+SIDE_ASPECT = 1.1             # gambar gabungan (satu panel) di bawah rasio lebar/tinggi ini ditaruh di samping butir
+PANEL_WIDE_ASPECT = 3.5       # panel terpisah di atas rasio ini (mis. tabel lebar) memakai seluruh lebar kotak
 FIX_ATTEMPTS = 1
 MAX_NUMBER_NOTES = 6          # angka yang dikutip satu per satu di komentar review
 NUMBER_CONTEXT_CHARS = 45     # panjang potongan kalimat di kiri/kanan angka
 BLOCK_TYPES = {"heading", "label", "para", "bullet", "item", "table", "figure"}
+PANEL_BLOCK_TYPES = {"para", "bullet", "item"}
+MAX_CAPTION_WORDS = 7         # keterangan panel yang lebih panjang = kalimat judul (headline) -> jadi butir
 STYLES = ("topic", "text")
 
 ProgressFn = Callable[[float, str], None]
@@ -147,24 +150,49 @@ Book section: "{section}".{focus}
 The slide render is attached. Slide elements (id, kind, position x/y and size w/h in % of the slide, content):
 {elements}
 
-The box has:
+The box is laid out like the example book: the box title, then ONE ROW PER PANEL of the slide. A row shows the
+panel's chart/table cropped from the slide on the left and that panel's own bullet points on the right. So a slide
+with four titled charts, each with its explanation text, becomes four rows, not one picture of the whole slide.
+
+Answer fields:
 - "title": the box title = the slide's main key message, one sentence (usually the slide title; drop page numbers
   and "...").
-- "figures": supporting charts, number tables, diagrams, or pictures, each {{"ids": [...], "caption": "..."}}.
-  ids = every element that makes up that picture: the chart itself, its panel title/labels, legend, and the source
-  note attached to it. Panels that sit side by side and belong together should be one picture (one entry with all
-  their ids). At most {max_fig}.
-  Do NOT include the slide title, the key-message box you already wrote as text, logos, page numbers, template
-  labels, or working notes. If the slide's content is one large picture (a screenshot), use that picture's id.
-  caption = a short panel/chart title if the slide has one (keep the slide's capitals), otherwise "".
+- "figures": the panels, in the slide's reading order, each {{"ids": [...], "caption": "...", "blocks": [...]}}.
+  * Split: every chart, table, or diagram that has its own panel title or its own explanatory text is a SEPARATE
+    figure. Put elements into one figure only when they form one picture together (a chart with its legend, axis
+    labels and source note; small charts that share one title and one explanation). At most {max_fig}.
+  * ids = the elements that make up the picture: the chart/table/picture itself, labels drawn on it, its legend and
+    source note. Do NOT include text boxes whose content you write as bullets, the slide title, logos, page numbers,
+    template labels, or working notes. If the slide's content is one large picture (a screenshot), use that
+    picture's id.
+  * A panel's HEADLINE BANNER (a sentence in a coloured/filled box above or over the chart that states the
+    panel's message, e.g. "HARGA MINYAK NAIK LEBIH TINGGI BILA TENSI PERANG & KERUSAKAN MENINGKAT") is NOT part
+    of the picture: leave it out of ids and write it as the FIRST bullet of that panel's blocks, in normal
+    sentence case ("Harga minyak naik lebih tinggi bila tensi perang & kerusakan meningkat ..."). A short chart
+    title printed inside the chart (e.g. "Asumsi Minyak Brent RDG Mar 2026") stays in the picture.
+  * caption = the panel's short title as written on the slide, without its number (e.g. "NPI 2026",
+    "DAMPAK KONFLIK KE PDB DAN INFLASI"), at most {max_words} words, only when that title is a separate text box
+    on the slide (not text inside the chart picture); otherwise "". Never a headline banner (that is a bullet).
+  * Infographics are NOT split: a diagram built from shapes, icons, arrows and small text boxes that reads as one
+    picture (e.g. a policy-mix diagram, a transmission-channel scheme, a framework) is ONE figure with
+    "full": true; its ids are all elements of the diagram. A full figure is shown across the whole box width with
+    its points written below it. A slide that is one infographic gives one full figure. Parts of a diagram that are
+    joined by arrows, a shared background, or one framework drawn across the slide are ONE figure; never cut a
+    diagram into its boxes. Charts and number tables beside a diagram are still separate figures.
+  * blocks = 1-4 points that explain THIS panel. Every chart or table needs its explanation next to it: take the
+    text that belongs to it on the slide (its explanation box next to / above / below it, its message), and when
+    the slide only has one key-message box for all panels, give each point of that box to the panel it talks
+    about: {{"type": "bullet", "text": "..."}}, or
+    {{"type": "item", "label": "a.", "text": "...", "level": 0}} when the slide numbers them. [] if the slide has
+    no text for this panel.
   A slide without charts: "figures": [].
-- "blocks": the summary of the slide, 1-6 points {{"type": "bullet", "text": "..."}}; you may use
-  {{"type": "para", "text": "..."}} for an introductory sentence and {{"type": "item", "label": "a.", "text": "...",
-  "level": 0}} when the slide uses a numbered/lettered list. Take them mainly from the key-message box and the
-  explanatory text of the slide.
+- "blocks": points that belong to no single panel (an overall conclusion of the slide), or all points of a
+  slide without charts. 0-6 points; you may use {{"type": "para", "text": "..."}} for an introductory sentence.
+  Never repeat a point already written under a panel.
 
 {rules}
-Answer ONLY with JSON: {{"title": "...", "figures": [{{"ids": ["e3", "e4"], "caption": ""}}], "blocks": [...]}}
+Answer ONLY with JSON:
+{{"title": "...", "figures": [{{"ids": ["e3", "e4"], "caption": "", "full": false, "blocks": [...]}}], "blocks": [...]}}
 """
 
 TEXT_PROMPT = """You are writing the content of one slide as BOOK TEXT (in Indonesian), almost word for word.
@@ -186,7 +214,9 @@ The slide render is attached. Slide elements (id, kind, position x/y and size w/
   {{"type": "figure", "ids": ["e9"], "caption": "..."}}
                                                    a table/chart/diagram that is a picture, cropped from the render
 Text rules:
-- Do not write a slide title that only marks the sequence (e.g. "Rekomendasi Bauran Kebijakan RDG Maret 2026 (3)").
+- Do not write a slide title that only marks the sequence (e.g. "Rekomendasi Bauran Kebijakan RDG Maret 2026 (3)")
+  or only restates the book section (e.g. "Kesimpulan Diskusi Hari 1 dan Arahan ADG - Mei 2025: Moneter" in the
+  section "Kesimpulan dan Arahan Moneter").
 - If the slide continues the previous slide (title ending in "(lanjutan)", point numbers continuing), do not repeat
   the sub-heading or introductory sentence already written; just continue the content.
 - A point number already present in the slide text goes into "label"; do not repeat it in "text".
@@ -482,21 +512,47 @@ def _check_figures(figs, els: dict, where: str) -> list:
     return errors
 
 
+def _check_blocks(blocks, where: str, types: set) -> list:
+    if not isinstance(blocks, list):
+        return [f"{where}: 'blocks' must be a list"]
+    errors = []
+    for i, b in enumerate(blocks, 1):
+        if not isinstance(b, dict) or b.get("type") not in types:
+            errors.append(f"{where} block {i}: type must be one of {', '.join(sorted(types))} "
+                          f"({b.get('type') if isinstance(b, dict) else b!r})")
+    return errors
+
+
 def validate_item(data: dict, slide: Slide, style: str) -> list:
     errors = []
     blocks = data.get("blocks")
     if not isinstance(blocks, list):
         return ["'blocks' must be a list"]
+    all_blocks = list(blocks)
     if style == "topic":
         if not str(data.get("title", "")).strip():
             errors.append("empty 'title'")
         figs = data.get("figures", [])
         errors += _check_figures(figs, slide.els, "figures")
-        if isinstance(figs, list) and len(figs) > MAX_FIGURES:
-            errors.append(f"at most {MAX_FIGURES} figures")
+        if isinstance(figs, list):
+            if len(figs) > MAX_FIGURES:
+                errors.append(f"at most {MAX_FIGURES} figures")
+            for fi, f in enumerate(figs, 1):
+                if isinstance(f, dict) and len(str(f.get("caption") or "").split()) > MAX_CAPTION_WORDS:
+                    errors.append(f"figure {fi}: caption longer than {MAX_CAPTION_WORDS} words is a headline: "
+                                  "write it as the figure's first bullet in sentence case and set caption \"\"")
+                if isinstance(f, dict) and f.get("blocks"):
+                    errs = _check_blocks(f["blocks"], f"figure {fi}", PANEL_BLOCK_TYPES)
+                    errors += errs
+                    if not errs:
+                        all_blocks += f["blocks"]
+        if isinstance(figs, list) and len(figs) >= 2 and blocks and \
+                not any(isinstance(f, dict) and f.get("blocks") for f in figs):
+            errors.append("no figure has its own 'blocks': give each point to the figure it explains (the "
+                          "figure's 'blocks'); keep in the top-level 'blocks' only points about the whole slide")
     elif not blocks:
         errors.append("empty 'blocks'")
-    for i, b in enumerate(blocks, 1):
+    for i, b in enumerate(all_blocks, 1):
         if not isinstance(b, dict) or b.get("type") not in BLOCK_TYPES:
             errors.append(f"block {i}: unknown type ({b.get('type') if isinstance(b, dict) else b!r})")
             continue
@@ -528,7 +584,7 @@ def write_item(item: Item, slide: Slide, section_title: str, prev_tail: str, pro
                                     rules=COMMON_RULES)
     else:
         prompt = TOPIC_PROMPT.format(section=section_title, focus=focus, elements=elements, max_fig=MAX_FIGURES,
-                                     rules=COMMON_RULES)
+                                     max_words=MAX_CAPTION_WORDS, rules=COMMON_RULES)
     image = llm_planner.slide_image(slide.render) if slide.render else None
     try:
         data, errors, cached = ask_json(prompt, image, provider, model, cache_dir,
@@ -586,7 +642,10 @@ def number_context(text: str, number: str, chars: int = NUMBER_CONTEXT_CHARS) ->
 
 def item_text(result: dict) -> str:
     parts = [result.get("title", "")]
-    parts += [f.get("caption", "") for f in result.get("figures") or [] if isinstance(f, dict)]
+    for f in result.get("figures") or []:
+        if isinstance(f, dict):
+            parts.append(f.get("caption", ""))
+            parts += [b.get("text", "") for b in f.get("blocks") or [] if isinstance(b, dict)]
     for b in result.get("blocks") or []:
         if b.get("type") in ("heading", "label", "para", "bullet", "item"):
             parts.append(b.get("text", ""))
@@ -600,8 +659,46 @@ def crop_region(slide: Slide, ids: list) -> tuple:
     return re_.union([slide.els[k] for k in ids if k in slide.els])
 
 
-def save_figure(slide: Slide, ids: list, path: Path, render) -> Optional[Path]:
-    reg = crop_region(slide, ids)
+def _overlaps(a: tuple, b: tuple, eps: float = 0.005) -> bool:
+    return (min(a[0] + a[2], b[0] + b[2]) - max(a[0], b[0]) > eps and
+            min(a[1] + a[3], b[1] + b[3]) - max(a[1], b[1]) > eps)
+
+
+def panel_regions(slide: Slide, figs: list, aspect: float) -> list:
+    """Area crop tiap panel. Area panel (gabungan elemennya) dipotong di tepi inti panel tetangga supaya grafik
+    tetangga tidak ikut ter-crop; inti = gabungan gambar/tabel panel itu. Potongan tidak melewati tengah inti
+    panel sendiri."""
+    regs = [crop_region(slide, f["ids"]) for f in figs]
+    cores = []
+    for f, reg in zip(figs, regs):
+        main = [slide.els[k] for k in f["ids"] if k in slide.els and slide.els[k].kind in ("picture", "table")]
+        cores.append(re_.union(main) if main else reg)
+    out = []
+    for i, (x, y, w, h) in enumerate(regs):
+        x0, y0, x1, y1 = x, y, x + w, y + h
+        ci = cores[i]
+        mid_x, mid_y = ci[0] + ci[2] / 2, ci[1] + ci[3] / 2
+        for j, cj in enumerate(cores):
+            if j == i or not _overlaps((x0, y0, x1 - x0, y1 - y0), cj) or _overlaps(ci, cj):
+                continue
+            dx = cj[0] + cj[2] / 2 - mid_x
+            dy = cj[1] + cj[3] / 2 - mid_y
+            if abs(dx) * aspect >= abs(dy):       # tetangga di kiri / kanan
+                if dx > 0:
+                    x1 = min(x1, max(cj[0], mid_x))
+                else:
+                    x0 = max(x0, min(cj[0] + cj[2], mid_x))
+            else:                                 # tetangga di atas / bawah
+                if dy > 0:
+                    y1 = min(y1, max(cj[1], mid_y))
+                else:
+                    y0 = max(y0, min(cj[1] + cj[3], mid_y))
+        out.append((x0, y0, max(x1 - x0, 0.0), max(y1 - y0, 0.0)))
+    return out
+
+
+def save_figure(slide: Slide, ids: list, path: Path, render, reg: Optional[tuple] = None) -> Optional[Path]:
+    reg = reg or crop_region(slide, ids)
     if reg[2] <= 0 or reg[3] <= 0:
         return None
     box = le.Box("picture", *reg, images=[i for k in ids if k in slide.els for i in slide.els[k].images])
@@ -630,6 +727,62 @@ def table_rows(el) -> list:
     return [[re.sub(r"[ \t]+", " ", c).strip() for c in r] for r in el.rows]
 
 
+def topic_panels(slide: Slide, res: dict, blocks: list, aspect: float, fig: Callable) -> tuple:
+    """(butir sebelum panel, panel, butir setelah panel) untuk BookWriter.topic.
+    Panel = (gambar, keterangan, butir panel, lebar?). Panel "full" (infografis) selalu selebar kotak dengan
+    butirnya di bawah. Satu gambar tanpa butir sendiri memakai butir slide (sempit: di samping butir; lebar: di
+    atasnya). Beberapa gambar tanpa butir sendiri: tiap gambar satu baris, butir slide setelahnya; begitu juga
+    kalau panel pertama selebar kotak (infografis). Selain itu butir slide di bawah judul, sebelum panel."""
+    box_title = _norm(res.get("title", ""))
+
+    def chrome(k):
+        """Tidak menentukan batas crop: judul slide (sudah jadi judul kotak), nomor halaman, dan garis tipis
+        (garis pemisah bisa melintang sampai tepi slide; tetap terlihat di render)."""
+        b = slide.els.get(k)
+        if b is None:
+            return False
+        if b.kind == "shape":
+            return min(b.w * aspect, b.h) < 0.03
+        if b.kind != "text":
+            return False
+        t = _norm(re_.box_text(b))
+        return b.is_title or t.isdigit() or (len(t) >= 12 and t in box_title)
+
+    figs = []
+    for f in res.get("figures") or []:
+        ids = [k for k in f.get("ids") or [] if not chrome(k)]
+        if ids:
+            figs.append({**f, "ids": ids})
+    if not figs:
+        return blocks, [], []
+
+    slide_texts = [_norm(re_.box_text(b)) for b in slide.els.values() if b.kind == "text"]
+
+    def caption(f, ids):
+        cap = (f.get("caption") or "").strip()
+        if not cap or caption_in_image(cap, slide, ids):
+            return ""
+        # judul yang tidak ada di teks slide dibaca dari dalam gambar grafik: sudah terlihat di gambar
+        return cap if any(_norm(cap) in t for t in slide_texts) else ""
+
+    if len(figs) == 1 and not figs[0].get("blocks") and not figs[0].get("full"):
+        f = figs[0]                       # satu gambar + butir slide: sempit di samping butir, lebar di atasnya
+        img = fig(f["ids"])
+        if not img:
+            return blocks, [], []
+        x, y, fw, fh = crop_region(slide, f["ids"])
+        return [], [(img, caption(f, f["ids"]), blocks, fw * aspect / max(fh, 1e-6) >= SIDE_ASPECT)], []
+    panels = []
+    for f, reg in zip(figs, panel_regions(slide, figs, aspect)):
+        img = fig(f["ids"], reg)
+        if img:
+            wide = bool(f.get("full")) or reg[2] * aspect / max(reg[3], 1e-6) > PANEL_WIDE_ASPECT
+            panels.append((img, caption(f, f["ids"]), f.get("blocks") or [], wide))
+    if not any(pb for _, _, pb, _ in panels) or (panels and panels[0][3]):
+        return [], panels, blocks         # butir slide setelah gambar: tidak dibagi per panel / infografis di atas
+    return blocks, panels, []
+
+
 def write_book(outline: dict, items: list, slides: dict, docx_path: Path, media_dir: Path, aspect: float,
                template: Path = DEFAULT_TEMPLATE, title: str = "", comments: bool = True,
                page: Optional[BookHtmlWriter] = None) -> int:
@@ -654,9 +807,9 @@ def write_book(outline: dict, items: list, slides: dict, docx_path: Path, media_
                     renders[slide.n] = le.load_render(slide.render)
                 render = renders[slide.n]
 
-                def fig(ids, _s=slide, _r=render):
+                def fig(ids, reg=None, _s=slide, _r=render):
                     counter[_s.n] = counter.get(_s.n, 0) + 1
-                    return save_figure(_s, ids, media_dir / f"s{_s.n:03d}_{counter[_s.n]}.png", _r)
+                    return save_figure(_s, ids, media_dir / f"s{_s.n:03d}_{counter[_s.n]}.png", _r, reg)
 
                 start = docx.mark()
                 res = it.result
@@ -675,20 +828,7 @@ def write_book(outline: dict, items: list, slides: dict, docx_path: Path, media_
                     else:
                         blocks.append(b)
                 if it.style == "topic":
-                    figures, side = [], False
-                    figs = [f for f in res.get("figures") or [] if f.get("ids")]
-                    if figs:
-                        # seperti contoh buku: satu gambar per kotak = seluruh area grafik slide
-                        ids = list(dict.fromkeys(k for f in figs for k in f["ids"]))
-                        img = fig(ids)
-                        if img:
-                            caption = (figs[0].get("caption") or "").strip() if len(figs) == 1 else ""
-                            if caption and caption_in_image(caption, slide, ids):
-                                caption = ""
-                            figures.append((img, caption))
-                            x, y, fw, fh = crop_region(slide, ids)
-                            side = fw * aspect / max(fh, 1e-6) < SIDE_ASPECT
-                    w.topic(res.get("title", "").strip(), figures, blocks, side=side)
+                    w.topic(res.get("title", "").strip(), *topic_panels(slide, res, blocks, aspect, fig))
                 else:
                     w.blocks(blocks)
                 if comments and it.warnings:

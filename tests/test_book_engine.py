@@ -3,7 +3,9 @@
 - cek angka: angka buatan LLM yang tidak ada di teks slide ditandai; format 4,75 / 4.75 / 1.234 dianggap sama
 - nomor otomatis PowerPoint (1. a. i.) ikut ke deskripsi slide untuk LLM
 - validasi kerangka dan jawaban per slide
-- alur lengkap dengan LLM palsu (jawaban JSON tetap) menghasilkan DOCX dengan bab, bagian, kotak, dan komentar
+- crop panel tidak ikut memotong grafik panel tetangga
+- alur lengkap dengan LLM palsu (jawaban JSON tetap) menghasilkan DOCX dengan bab, bagian, kotak berpanel
+  (gambar | butir panel), indentasi badan teks seperti contoh, dan komentar
 """
 import json
 import re
@@ -20,7 +22,8 @@ import llm_planner  # noqa: E402
 from book_writer import md_runs  # noqa: E402
 from docx import Document  # noqa: E402
 from docx.oxml.ns import qn  # noqa: E402
-from layout_engine import Para  # noqa: E402
+import book_writer as bw  # noqa: E402
+from layout_engine import Box, Para  # noqa: E402
 
 DECK = ROOT / "docs" / "test.pptx"
 
@@ -57,20 +60,33 @@ class ValidateTest(unittest.TestCase):
         self.assertEqual(len(be.validate_outline(bad, {1, 2})), 2)
 
 
+class PanelTest(unittest.TestCase):
+    def test_regions_clip_neighbours(self):
+        # dua grafik berdampingan; teks judul panel kiri melebar sampai ke atas grafik kanan
+        els = {"e1": Box("picture", 0.05, 0.3, 0.4, 0.5), "e2": Box("text", 0.05, 0.2, 0.9, 0.08),
+               "e3": Box("picture", 0.55, 0.3, 0.4, 0.5)}
+        slide = be.Slide(1, "x", els)
+        left, right = be.panel_regions(slide, [{"ids": ["e1", "e2"]}, {"ids": ["e3"]}], 16 / 9)
+        self.assertAlmostEqual(left[0] + left[2], 0.55)      # berhenti di tepi kiri grafik kanan
+        self.assertAlmostEqual(right[0], 0.55)
+
+
 def fake_llm(prompt, image, provider, model):
     """Jawaban tetap: kerangka dengan dua slide pertama yang berteks; kotak / teks memakai elemen yang ada."""
     if "SUMMARY BOOK (a formal" in prompt:
         slides = [int(n) for n in re.findall(r"### Slide (\d+) \(", prompt)]
+        with_pics = [int(n) for n, k in re.findall(r"### Slide (\d+) \([^;]*; (\d+) charts", prompt) if int(k)]
         return json.dumps({"title": "Buku Uji", "chapters": [
             {"title": "Bab Satu", "sections": [
-                {"title": "Bagian Topik", "items": [{"slide": slides[0], "style": "topic", "focus": ""}]},
+                {"title": "Bagian Topik", "items": [{"slide": (with_pics or slides)[0], "style": "topic", "focus": ""}]},
                 {"title": "Bagian Teks", "items": [{"slide": slides[-1], "style": "text", "focus": ""}]}]}],
             "skipped": []})
     ids = re.findall(r"^(e\d+) (\w+)", prompt, re.M)
     pics = [k for k, kind in ids if kind == "picture"]
     if "one box" in prompt:
-        return json.dumps({"title": "Pesan kunci", "figures": [{"ids": pics[:1], "caption": ""}] if pics else [],
-                           "blocks": [{"type": "bullet", "text": "Pertumbuhan 98,76% di luar slide"}]})
+        return json.dumps({"title": "Pesan kunci", "figures": [
+            {"ids": pics[:1], "caption": "", "blocks": [{"type": "bullet", "text": "Penjelasan panel"}]}]
+            if pics else [], "blocks": [{"type": "bullet", "text": "Pertumbuhan 98,76% di luar slide"}]})
     return json.dumps({"blocks": [{"type": "label", "text": "KESIMPULAN"},
                                   {"type": "item", "label": "a.", "text": "Teks *miring*", "level": 0}]})
 
@@ -99,6 +115,14 @@ class PipelineTest(unittest.TestCase):
             self.assertIn("a.\tTeks miring", texts)
             box = doc.tables[0]
             self.assertEqual(box.rows[0].cells[0].text, "Pesan kunci")
+            # panel: gambar kiri | butir kanan (dua sel berbeda)
+            self.assertTrue(any(r.cells[0]._tc is not r.cells[1]._tc and "Penjelasan panel" in r.cells[1].text
+                                for r in box.rows), "baris panel (gambar | butir) tidak ada")
+            # indentasi seperti contoh: label < butir
+            label = next(p for p in doc.paragraphs if p.text == "KESIMPULAN")
+            item = next(p for p in doc.paragraphs if p.text == "a.\tTeks miring")
+            self.assertEqual(label.paragraph_format.left_indent.twips, bw.BODY_INDENT)
+            self.assertEqual(item.paragraph_format.left_indent.twips, bw.ITEM_TEXT)   # list masuk ke dalam
             # angka 98,76 tidak ada di slide -> komentar Word
             self.assertEqual(stats["comments"], 1)
             self.assertTrue(any(el.tag == qn("w:commentRangeStart") for el in doc.element.body.iter()))
