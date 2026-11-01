@@ -82,6 +82,25 @@ python app.py        # http://localhost:5001
 - `/review/<job>` shows each slide's render next to the result, with its type, plan source and flags.
 - `/dwp` is the editor flow: upload a PPT, then "Konversi ke CKEditor" asks whether flagged slides are fixed manually (rules only) or automatically with the LLM. The review step lets you edit each flagged slide by hand, re-plan it with an AI prompt prefilled from its flags, mark it OK, or revert it. Fixes live in server memory and are lost on restart.
 
+### POC API for the new-dwp frontend
+
+`poc_api.py` is a small backend for the "PPT to Word Convert" page in the real DWP frontend (`new-dwp`, branch `poc/ppt-word-convert`). It only runs the Full AI summary book (`book_engine.convert_book`, Claude on Bedrock), which adds the "Digital Workplace" review comments to the Word file. It needs `AWS_BEARER_TOKEN_BEDROCK` in `.env`.
+
+```
+python poc_api.py                # http://localhost:5003
+npm --prefix ../new-dwp run serve-poc -- --port 8090   # http://localhost:8090/app/v2/ppt-to-word
+```
+
+Both are also in `.claude/launch.json` (`poc-api`, `new-dwp-poc`). The new-dwp POC mode skips SSO and mocks the DWP middleware; it proxies `/poc-api/*` to this server.
+
+- `GET /api/poc/documents/<id>`: PPT, conversion progress (steps, slide counter, AI slide counter, ETA), Word and final PDF.
+- `POST /api/poc/documents/<id>/ppt` (multipart `file`): upload or replace the PPT (`.pptx`, max 150MB) and start converting. A replaced PPT and its Word file are deleted.
+- `GET /api/poc/documents/<id>/word`: the Word file with review comments.
+- `POST /api/poc/documents/<id>/final-pdf` (multipart `file`): the final PDF, after the Word file exists.
+- `POST /api/poc/documents/<id>/reset`: clear everything (demo).
+
+State is kept in `work/poc/<id>/state.json`, so it survives a restart. A conversion that was running when the server stopped is marked failed.
+
 ### PowerPoint add-in
 
 `addin/` holds the DWP Plugin ribbon rewritten in Python, including a **Convert to Word** button (report engine, rules only). See [addin/README.md](addin/README.md) for build, install and project status.

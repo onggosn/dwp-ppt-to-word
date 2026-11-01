@@ -17,6 +17,28 @@
         "import app; app.app.run(threaded=True, port=5002)"
       ],
       "port": 5002
+    },
+    {
+      "name": "poc-api",
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": [
+        "poc_api.py"
+      ],
+      "port": 5003
+    },
+    {
+      "name": "new-dwp-poc",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "--prefix",
+        "../new-dwp",
+        "run",
+        "serve-poc",
+        "--",
+        "--port",
+        "8090"
+      ],
+      "port": 8090
     }
   ]
 }
