@@ -60,6 +60,7 @@ SIDE_ASPECT = 1.1             # gambar gabungan (satu panel) di bawah rasio leba
 PANEL_WIDE_ASPECT = 3.5       # panel terpisah di atas rasio ini (mis. tabel lebar) memakai seluruh lebar kotak
 FIX_ATTEMPTS = 1
 MAX_NUMBER_NOTES = 12         # angka yang diberi komentar sendiri (tepat di angkanya); sisanya disebut di kotak
+VERDICTS = ("sure", "unsure", "absent")   # hasil cek angka; hanya yang bukan "sure" diberi komentar
 NUMBER_CONTEXT_CHARS = 45     # panjang potongan kalimat di kiri/kanan angka
 BLOCK_TYPES = {"heading", "label", "para", "bullet", "item", "table", "figure"}
 PANEL_BLOCK_TYPES = {"para", "bullet", "item"}
@@ -225,6 +226,24 @@ Text rules:
 Answer ONLY with JSON: {{"blocks": [...]}}
 """
 
+VERIFY_PROMPT = """You are checking numbers in a summary book written from the attached PowerPoint slide.
+These numbers are in the summary but NOT in the slide's text boxes, so they were read from the slide picture
+(chart data labels, axis, a table or text inside an image) or were made up. Look closely at the slide image and
+judge each number in its sentence:
+- "sure": the exact value is clearly printed on the slide (a data label, a table cell, text in a picture) and the
+  sentence uses it with the same meaning (same series, period, unit).
+- "unsure": the value is not printed but estimated from a bar/line height or an axis, too small or blurry to read
+  with certainty, computed from other values, rounded differently, or the sentence gives it another meaning.
+- "absent": the value is not on the slide at all.
+Numbers (number | sentence in the summary):
+{numbers}
+
+"note": for "unsure"/"absent", a short reason in Indonesian saying what the slide shows (e.g. "label grafik Brent
+Tw.I 2026 tertulis 84,0, bukan 84,9"); "" for "sure".
+Answer ONLY with JSON, one entry per number above:
+{{"numbers": [{{"number": "75.7", "verdict": "sure", "note": ""}}]}}
+"""
+
 FIX_PROMPT = """
 
 Your previous answer could not be used:
@@ -275,6 +294,7 @@ class Item:
     result: dict = field(default_factory=dict)
     warnings: list = field(default_factory=list)
     numbers: list = field(default_factory=list)    # angka di teks buku yang tidak ada di teks slide
+    verdicts: dict = field(default_factory=dict)   # angka -> (verdict, catatan) dari cek gambar slide
     source: str = "llm"            # llm | cache | fallback
 
 
@@ -631,6 +651,41 @@ def unknown_numbers(text: str, source: set) -> list:
     return out
 
 
+def validate_verdicts(data: dict, numbers: list) -> list:
+    got = data.get("numbers")
+    if not isinstance(got, list):
+        return ["'numbers' must be a list"]
+    seen = {str(x.get("number", "")).strip() for x in got
+            if isinstance(x, dict) and x.get("verdict") in VERDICTS}
+    missing = [n for n in numbers if n not in seen]
+    return [f"missing or invalid verdict for: {', '.join(missing)} (verdict: {', '.join(VERDICTS)})"] \
+        if missing else []
+
+
+def verify_numbers(item: Item, image: Optional[bytes], provider: str, model: str,
+                   cache_dir: Optional[Path]) -> bool:
+    """AI mencocokkan angka yang tidak ada di teks slide dengan gambar slide. Mengisi item.verdicts;
+    True kalau jawaban dari cache. Kalau gagal, semua angka tetap dianggap perlu dicek."""
+    text = item_text(item.result)
+    listing = "\n".join(f"{n} | {number_context(text, n)}" for n in item.numbers)
+    try:
+        data, _, cached = ask_json(VERIFY_PROMPT.format(numbers=listing), image, provider, model, cache_dir,
+                                   lambda d: validate_verdicts(d, item.numbers))
+    except Exception:
+        data, cached = None, False
+    if data is None:
+        item.verdicts = {n: ("unsure", "") for n in item.numbers}
+        return False
+    by_n = {str(x.get("number", "")).strip(): x for x in data["numbers"] if isinstance(x, dict)}
+    item.verdicts = {n: (by_n[n]["verdict"], str(by_n[n].get("note") or "").strip()) for n in item.numbers}
+    return cached
+
+
+def flagged_numbers(item: Item) -> list:
+    """Angka yang perlu komentar: belum dicek, atau AI tidak yakin / tidak menemukannya di slide."""
+    return [n for n in item.numbers if item.verdicts.get(n, ("unsure",))[0] != "sure"]
+
+
 def number_context(text: str, number: str, chars: int = NUMBER_CONTEXT_CHARS) -> str:
     """Potongan kalimat di sekitar angka, untuk komentar review ("...terdapat 97 dan 485 bank...")."""
     m = re.search(r"(?<![\d.,])" + re.escape(number) + r"(?![\d]|[.,]\d)", text)
@@ -835,13 +890,16 @@ def write_book(outline: dict, items: list, slides: dict, docx_path: Path, media_
                 if not comments:
                     continue
                 notes = list(it.warnings)
-                for k, num in enumerate(it.numbers):
-                    if k < MAX_NUMBER_NOTES and docx.comment_number(start, num, [
-                            f'Angka "{num}" tidak ada di teks slide {slide.n}: mungkin dibaca dari grafik, atau '
-                            "salah tafsir. Cocokkan dengan slide."]):
+                for k, num in enumerate(flagged_numbers(it)):
+                    verdict, why = it.verdicts.get(num, ("unsure", ""))
+                    head = (f'Angka "{num}" tidak ditemukan di slide {slide.n}' if verdict == "absent" else
+                            f'Angka "{num}" belum pasti: tidak ada di teks slide {slide.n} dan AI kurang yakin '
+                            "membacanya dari gambar")
+                    msg = f"{head}{': ' + why.rstrip('.') if why else ''}. Cocokkan dengan slide."
+                    if k < MAX_NUMBER_NOTES and docx.comment_number(start, num, [msg]):
                         n_comments += 1
                     else:
-                        notes.append(f'angka "{num}" tidak ada di teks slide (cocokkan dengan slide)')
+                        notes.append(f'angka "{num}" perlu dicek{": " + why.rstrip(".") if why else ""}')
                 if notes:
                     docx.comment(start, [f"Slide {slide.n}: perlu dicek."] + ["- " + x for x in notes])
                     n_comments += 1
@@ -908,7 +966,7 @@ def convert_book(
                              prev_tail.get(id(it), ""), provider, model, cache): it for it in items}
         for done, f in enumerate(as_completed(futures), 1):
             f.result()
-            progress(0.25 + 0.65 * done / max(len(items), 1),
+            progress(0.25 + 0.55 * done / max(len(items), 1),
                      f"AI: slide {futures[f].slide} selesai ({done}/{len(items)})")
     t_items = time.time()
 
@@ -917,6 +975,24 @@ def convert_book(
             continue
         text = item_text(it.result)
         it.numbers = unknown_numbers(text, number_set(by_n[it.slide].source_text()))
+    # angka itu dicek ke gambar slide; hanya yang tidak pasti diberi komentar
+    check = [it for it in items if it.numbers and by_n[it.slide].render] if comments else []
+    verify_calls = verify_hits = 0
+    if check:
+        import llm_planner
+        progress(0.8, f"AI mengecek angka di {len(check)} slide")
+        with ThreadPoolExecutor(max(1, workers)) as ex:
+            futures = {ex.submit(verify_numbers, it, llm_planner.slide_image(by_n[it.slide].render), provider,
+                                 model, cache): it for it in check}
+            for done, f in enumerate(as_completed(futures), 1):
+                if f.result():
+                    verify_hits += 1
+                else:
+                    verify_calls += 1
+                progress(0.8 + 0.1 * done / len(check),
+                         f"AI: angka slide {futures[f].slide} dicek ({done}/{len(check)})")
+
+    t_check = time.time()
 
     progress(0.92, "Menulis dokumen Word")
     page = BookHtmlWriter(img_src) if img_src else BookHtmlWriter()
@@ -928,7 +1004,9 @@ def convert_book(
     report = {"outline": outline, "items": [
         {"slide": it.slide, "chapter": it.chapter + 1, "section": it.section + 1, "style": it.style,
          "focus": it.focus, "source": it.source, "warnings": it.warnings,
-         "numbers": [{"number": n, "context": number_context(item_text(it.result), n)} for n in it.numbers],
+         "numbers": [{"number": n, "context": number_context(item_text(it.result), n),
+                      "verdict": it.verdicts.get(n, ("", ""))[0], "note": it.verdicts.get(n, ("", ""))[1]}
+                     for n in it.numbers],
          "result": it.result} for it in items]}
     (work / "book.json").write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
     progress(1.0, "Selesai")
@@ -936,14 +1014,17 @@ def convert_book(
         "title": title or outline.get("title"), "slides": len(slides), "hidden_skipped": hidden,
         "rendered": rendered, "chapters": len(outline["chapters"]), "items": len(items),
         "slides_used": len(used), "slides_skipped": sorted(s.n for s in slides if s.n not in used),
-        "llm_calls": sum(1 for it in items if it.source == "llm") + (0 if outline_cached else 1),
-        "cache_hits": sum(1 for it in items if it.source == "cache") + (1 if outline_cached else 0),
+        "llm_calls": sum(1 for it in items if it.source == "llm") + (0 if outline_cached else 1) + verify_calls,
+        "cache_hits": sum(1 for it in items if it.source == "cache") + (1 if outline_cached else 0) + verify_hits,
         "fallback": [it.slide for it in items if it.source == "fallback"],
         "comments": n_comments,
+        "numbers": {"not_in_text": sum(len(it.numbers) for it in items),
+                    "flagged": sum(len(flagged_numbers(it)) for it in items)},
         "seconds": {"render": round(t_render - t0, 1), "outline": round(t_outline - t_render, 1),
-                    "write": round(t_items - t_outline, 1), "docx": round(time.time() - t_items, 1)},
+                    "write": round(t_items - t_outline, 1), "check": round(t_check - t_items, 1),
+                    "docx": round(time.time() - t_check, 1)},
         "docx": str(docx_path), "html": str(html_path) if html_path else None, "book": str(work / "book.json"),
-        "check": sorted({it.slide for it in items if it.warnings or it.numbers}),
+        "check": sorted({it.slide for it in items if it.warnings or flagged_numbers(it)}),
     }
 
 

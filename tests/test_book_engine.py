@@ -3,6 +3,7 @@
 - cek angka: angka buatan LLM yang tidak ada di teks slide ditandai; format 4,75 / 4.75 / 1.234 dianggap sama
 - nomor otomatis PowerPoint (1. a. i.) ikut ke deskripsi slide untuk LLM
 - validasi kerangka dan jawaban per slide
+- cek angka ke gambar slide: hanya angka yang AI tidak yakin diberi komentar
 - crop panel tidak ikut memotong grafik panel tetangga
 - alur lengkap dengan LLM palsu (jawaban JSON tetap) menghasilkan DOCX dengan bab, bagian, kotak berpanel
   (gambar | butir panel), indentasi badan teks seperti contoh, dan komentar
@@ -33,6 +34,38 @@ class NumbersTest(unittest.TestCase):
         source = be.number_set("BI Rate tetap 4,75%; cadev USD151,9 miliar; 1.234 bank pada 2026")
         self.assertEqual(be.unknown_numbers("BI Rate 4.75% dan 151,9 miliar, 1234 bank 2026", source), [])
         self.assertEqual(be.unknown_numbers("inflasi 3,3% dan 5 bank", source), ["3,3"])   # 1 digit diabaikan
+
+
+class VerifyTest(unittest.TestCase):
+    """angka di luar teks slide dicek ke gambar; yang "sure" tidak diberi komentar"""
+    def setUp(self):
+        self._orig = llm_planner.call_llm
+
+    def tearDown(self):
+        llm_planner.call_llm = self._orig
+
+    def item(self):
+        it = be.Item(slide=1, chapter=0, section=0, style="topic")
+        it.result = {"title": "Brent 84,0 dan PDB 3,20%", "figures": [], "blocks": []}
+        it.numbers = ["84,0", "3,20"]
+        return it
+
+    def test_only_unsure_flagged(self):
+        def fake(prompt, image, provider, model):
+            self.assertIn("84,0 | ", prompt)
+            return json.dumps({"numbers": [{"number": "84,0", "verdict": "sure", "note": ""},
+                                           {"number": "3,20", "verdict": "unsure", "note": "label kecil"}]})
+        llm_planner.call_llm = fake
+        it = self.item()
+        be.verify_numbers(it, None, "bedrock", "m", None)
+        self.assertEqual(be.flagged_numbers(it), ["3,20"])
+        self.assertEqual(it.verdicts["3,20"], ("unsure", "label kecil"))
+
+    def test_failure_keeps_all(self):
+        llm_planner.call_llm = lambda *a: '{"numbers": []}'
+        it = self.item()
+        be.verify_numbers(it, None, "bedrock", "m", None)
+        self.assertEqual(be.flagged_numbers(it), ["84,0", "3,20"])
 
 
 class LabelsTest(unittest.TestCase):
