@@ -27,14 +27,15 @@ frontend/  (DWP, Vue 3 + Vuetify)          backend/  (Flask, Python)
 
 ## Setup
 
-Backend (tested with Python 3.13):
+Backend (Python 3.13; only once, on a fresh checkout):
 
 ```
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r backend/requirements.txt
+py -3.13 -m venv .venv
+.venv\Scripts\pip install -r backend\requirements.txt
 copy backend\.env.example backend\.env      # then fill in AWS_BEARER_TOKEN_BEDROCK
 ```
+
+Do not run `python -m venv .venv` over an existing `.venv` with another Python version: the installed packages are built for 3.13 and stop loading (`cannot import name 'etree' from 'lxml'`). To rebuild it, use `py -3.13 -m venv --clear .venv` and install the requirements again.
 
 Frontend (Node 18+). It also needs `frontend/.env.development` from the DWP team (not in git); `.env.poc` only overrides a few values.
 
