@@ -13,7 +13,7 @@ import os
 import re
 import threading
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Optional, Union
 
 try:   # .env di root repo (tidak ikut git); variabel yang sudah di-export tetap menang
     from dotenv import load_dotenv
@@ -43,27 +43,33 @@ def client():
     return _client
 
 
-def generate(prompt: str, image: Optional[bytes] = None, model: str = DEFAULT_MODEL,
+def generate(prompt: str, image: Union[bytes, list, None] = None, model: str = DEFAULT_MODEL,
              on_text: Optional[Callable[[int], None]] = None) -> str:
-    """Satu permintaan ke Claude; mengembalikan teks jawaban. image: JPEG (render slide).
+    """Satu permintaan ke Claude; mengembalikan teks jawaban. image: JPEG (render slide), atau daftar JPEG
+    (render slide lalu crop grafik, urutannya dijelaskan di prompt).
     on_text(total karakter) dipanggil selama jawaban di-stream."""
     content = []
-    if image:
+    for img in ([image] if isinstance(image, (bytes, bytearray)) else image or []):
         content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
-                                                     "data": base64.standard_b64encode(image).decode()}})
+                                                     "data": base64.standard_b64encode(img).decode()}})
     content.append({"type": "text", "text": prompt})
     total = 0
     model = model or DEFAULT_MODEL
     # adaptive thinking + effort hanya untuk Claude 4.6 ke atas; Haiku/Sonnet/Opus 4.5 dan lebih lama menolaknya
-    extra = {} if re.search(r"claude-(3|(haiku|sonnet|opus)-4-[0-5]\b)", model) else \
-        {"thinking": {"type": "adaptive"}, "output_config": {"effort": EFFORT}}
+    body = {"anthropic_version": BEDROCK_API_VERSION}
+    if re.search(r"claude-(3|(haiku|sonnet|opus)-4-[0-5]\b)", model):
+        # model tanpa thinking: temperature 0 supaya hasil konversi dan cek angka tidak berubah-ubah antar run
+        # (SDK anthropic 2.x tidak punya argumen temperature lagi; Bedrock masih menerimanya di body)
+        extra, body["temperature"] = {}, 0.0
+    else:
+        extra = {"thinking": {"type": "adaptive"}, "output_config": {"effort": EFFORT}}
     with client().messages.stream(
         model=model,
         max_tokens=MAX_TOKENS,
         messages=[{"role": "user", "content": content}],
         # SDK anthropic >= 2.x mengirim versi API baru ("2026-10-21") yang ditolak Bedrock untuk
         # Opus 4.5 / 4.6 ("Invalid API version"); versi Bedrock ini diterima semua model Claude
-        extra_body={"anthropic_version": BEDROCK_API_VERSION},
+        extra_body=body,
         **extra,
     ) as stream:
         for piece in stream.text_stream:

@@ -4,6 +4,7 @@
 - nomor otomatis PowerPoint (1. a. i.) ikut ke deskripsi slide untuk LLM
 - validasi kerangka dan jawaban per slide
 - cek angka ke gambar slide: hanya angka yang AI tidak yakin diberi komentar
+- gambar/grafik besar dikirim ke AI juga sebagai crop resolusi penuh
 - crop panel tidak ikut memotong grafik panel tetangga
 - alur lengkap dengan LLM palsu (jawaban JSON tetap) menghasilkan DOCX dengan bab, bagian, kotak berpanel
   (gambar | butir panel), indentasi badan teks seperti contoh, dan komentar
@@ -35,10 +36,28 @@ class NumbersTest(unittest.TestCase):
         source = be.number_set("BI Rate tetap 4,75%; cadev USD151,9 miliar; 1.234 bank pada 2026")
         self.assertEqual(be.unknown_numbers("BI Rate 4.75% dan 151,9 miliar, 1234 bank 2026", source), [])
         self.assertEqual(be.unknown_numbers("inflasi 3,3% dan 5 bank", source), ["3,3"])   # 1 digit diabaikan
+        self.assertEqual(be.unknown_numbers("pada 2025 dan Mar'26 naik 12,5", set()), ["12,5"])   # tahun diabaikan
+
+
+class NumberPlacesTest(unittest.TestCase):
+    def test_each_use_hidden(self):
+        text = "PDB Dunia 2,9% (2026) dan 2,9% (2027), inflasi 4,5%"
+        places = be.number_places(text, "2,9", 20)
+        self.assertEqual(len(places), 2)
+        self.assertIn("[[?]]% (2026) dan [[#]]", places[0])
+        self.assertIn("[[#]]% (2026) dan [[?]]", places[1])
+        self.assertNotIn("2,9", "".join(places))
+
+    def test_same_number(self):
+        self.assertTrue(be.same_number("2,8", "2.8"))
+        self.assertTrue(be.same_number("0,8", "-0.8"))
+        self.assertTrue(be.same_number("4.831", "4,831"))
+        self.assertTrue(be.same_number("86", "USD86/bl"))
+        self.assertFalse(be.same_number("2,9", "2.8"))
 
 
 class VerifyTest(unittest.TestCase):
-    """angka di luar teks slide dicek ke gambar; yang "sure" tidak diberi komentar"""
+    """AI membaca nilai di tempat yang dimaksud tanpa melihat angkanya; program yang membandingkan"""
     def setUp(self):
         self._orig = llm.call_llm
 
@@ -47,26 +66,80 @@ class VerifyTest(unittest.TestCase):
 
     def item(self):
         it = be.Item(slide=1, chapter=0, section=0, style="topic")
-        it.result = {"title": "Brent 84,0 dan PDB 3,20%", "figures": [], "blocks": []}
-        it.numbers = ["84,0", "3,20"]
+        it.result = {"title": "Brent 84,0 dan PDB 2,9% (2026) dan 2,9% (2027)", "figures": [], "blocks": []}
+        it.numbers = ["84,0", "2,9"]
         return it
 
-    def test_only_unsure_flagged(self):
+    def test_wrong_use_flagged(self):
         def fake(prompt, image, provider, model):
-            self.assertIn("84,0 | ", prompt)
-            return json.dumps({"numbers": [{"number": "84,0", "verdict": "sure", "note": ""},
-                                           {"number": "3,20", "verdict": "unsure", "note": "label kecil"}]})
+            self.assertIn("p1 | Brent [[?]]", prompt)
+            lines = [ln for ln in prompt.splitlines() if ln.startswith(("p2 |", "p3 |"))]
+            self.assertEqual(len(lines), 2)
+            self.assertNotIn("2,9", "".join(lines))                 # angka yang dicek tidak terlihat oleh AI
+            return json.dumps({"places": [
+                {"id": "p1", "at": "Brent Tw.I", "kind": "printed", "value": "84.0", "certain": True},
+                {"id": "p2", "at": "PDB kolom 2026", "kind": "printed", "value": "2.8", "certain": True},
+                {"id": "p3", "at": "PDB kolom 2027", "kind": "printed", "value": "2.9", "certain": True}]})
         llm.call_llm = fake
         it = self.item()
-        be.verify_numbers(it, None, "bedrock", "m", None)
-        self.assertEqual(be.flagged_numbers(it), ["3,20"])
-        self.assertEqual(it.verdicts["3,20"], ("unsure", "label kecil"))
+        be.verify_numbers(it, be.Slide(1, "", {}), "bedrock", "m", None)
+        self.assertEqual(be.flagged_numbers(it), ["2,9"])
+        self.assertEqual(it.verdicts["2,9"], ("mismatch", "PDB kolom 2026 tertulis 2.8"))
+
+    def test_unclear_and_missing(self):
+        llm.call_llm = lambda *a: json.dumps({"places": [
+            {"id": "p1", "at": "Brent Tw.I", "kind": "printed", "value": "84.0", "certain": False},
+            {"id": "p2", "at": "", "kind": "no_spot", "value": "", "certain": False},
+            {"id": "p3", "at": "", "kind": "no_spot", "value": "", "certain": False}]})
+        it = self.item()
+        be.verify_numbers(it, be.Slide(1, "", {}), "bedrock", "m", None)
+        self.assertEqual(it.verdicts["84,0"][0], "unsure")
+        self.assertEqual(it.verdicts["2,9"][0], "absent")
 
     def test_failure_keeps_all(self):
-        llm.call_llm = lambda *a: '{"numbers": []}'
+        llm.call_llm = lambda *a: '{"places": []}'
         it = self.item()
-        be.verify_numbers(it, None, "bedrock", "m", None)
-        self.assertEqual(be.flagged_numbers(it), ["84,0", "3,20"])
+        be.verify_numbers(it, be.Slide(1, "", {}), "bedrock", "m", None)
+        self.assertEqual(be.flagged_numbers(it), ["84,0", "2,9"])
+
+
+class CropsTest(unittest.TestCase):
+    """grafik/tabel bergambar dikirim juga sebagai crop resolusi penuh, urutannya dijelaskan di prompt"""
+    @staticmethod
+    def png(w, h, mode="RGB"):
+        import io
+        from PIL import Image
+        buf = io.BytesIO()
+        Image.new(mode, (w, h)).save(buf, "PNG")
+        return buf.getvalue()
+
+    def test_big_pictures_only(self):
+        big = Box("picture", 0.6, 0.3, 0.35, 0.3, images=[(self.png(1000, 600, "RGBA"), "png", 0.1)])
+        icon = Box("picture", 0.0, 0.0, 0.05, 0.05, images=[(self.png(200, 200), "png", 0.0025)])
+        cut = Box("picture", 0.0, 0.3, 0.4, 0.4, images=[(self.png(900, 900), "png", 0.16)], cropped=True)
+        slide = be.Slide(1, "", {"e1": big, "e2": icon, "e3": cut})
+        images, note = be.slide_images(slide)
+        self.assertEqual([k for k, _, _ in slide.crops], ["e1"])   # tanpa render: gambar terpotong dilewati
+        self.assertEqual(len(images), 1)
+        self.assertIn("e1", note)
+        self.assertEqual(images[0][:2], b"\xff\xd8")             # JPEG
+
+    def test_wide_table_split(self):
+        wide = Box("picture", 0.3, 0.7, 0.66, 0.29, images=[(self.png(1958, 408), "png", 0.19)])
+        slide = be.Slide(1, "", {"e1": wide})
+        images, note = be.slide_images(slide)
+        self.assertEqual([p for _, p, _ in slide.crops], ["1/3", "2/3", "3/3"])
+        self.assertIn("e1 part 2/3", note)
+        from PIL import Image
+        import io
+        w, h = Image.open(io.BytesIO(images[0])).size                  # diperbesar sampai batas ukuran Claude
+        self.assertGreater(w, 1300)
+        self.assertLessEqual(w * h, llm.CROP_MAX_PIXELS * 1.01)
+
+    def test_no_pictures(self):
+        images, note = be.slide_images(be.Slide(1, "", {}))
+        self.assertEqual(images, [])
+        self.assertIn("No slide render", note)
 
 
 class LabelsTest(unittest.TestCase):

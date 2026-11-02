@@ -50,6 +50,7 @@ class Box:
     is_placeholder_body: bool = False
     filled: bool = False      # kotak teks berwarna (node diagram / bilah), bukan text box polos
     fill_cells: int = 0       # tabel: sel kosong berwarna (bar Gantt, status warna) -> maknanya ada di warna
+    cropped: bool = False     # gambar dipotong di PowerPoint: blob aslinya lebih luas dari yang tampil di slide
 
     @property
     def r(self) -> float:
@@ -222,6 +223,8 @@ def collect(shapes, W: int, H: int, tf=None) -> list:
             try:
                 img = s.image
                 box.images = [(img.blob, img.ext, box.w * box.h)]
+                box.cropped = any(abs(getattr(s, a, 0) or 0) > 0.001
+                                  for a in ("crop_left", "crop_right", "crop_top", "crop_bottom"))
             except Exception:
                 pass                  # gambar tertaut (tanpa data di PPTX): diambil dari render, seperti chart
         elif getattr(s, "has_table", False) and s.has_table:

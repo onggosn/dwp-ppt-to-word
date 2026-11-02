@@ -47,7 +47,7 @@ from docx_common import DEFAULT_TEMPLATE, Tee
 HERE = Path(__file__).resolve().parent
 DEFAULT_CACHE = HERE / "work" / "book_cache"
 DEFAULT_MODEL = bedrock_llm.DEFAULT_MODEL
-BOOK_VERSION = "4"            # naikkan kalau prompt / skema berubah supaya cache lama tidak dipakai
+BOOK_VERSION = "5"            # naikkan kalau prompt / skema berubah supaya cache lama tidak dipakai
 
 OUTLINE_SLIDE_CHARS = 1400    # teks per slide di prompt kerangka
 OUTLINE_EL_CHARS = 350
@@ -59,8 +59,15 @@ SIDE_ASPECT = 1.1             # gambar gabungan (satu panel) di bawah rasio leba
 PANEL_WIDE_ASPECT = 3.5       # panel terpisah di atas rasio ini (mis. tabel lebar) memakai seluruh lebar kotak
 FIX_ATTEMPTS = 1
 MAX_NUMBER_NOTES = 12         # angka yang diberi komentar sendiri (tepat di angkanya); sisanya disebut di kotak
-VERDICTS = ("sure", "unsure", "absent")   # hasil cek angka; hanya yang bukan "sure" diberi komentar
+VERDICTS = ("sure", "mismatch", "unsure", "absent")   # hasil cek angka; hanya yang bukan "sure" diberi komentar
+SPOT_KINDS = ("printed", "not_printed", "no_spot")    # jawaban AI per tempat angka (lihat VERIFY_PROMPT)
 NUMBER_CONTEXT_CHARS = 45     # panjang potongan kalimat di kiri/kanan angka
+VERIFY_CONTEXT_CHARS = 150    # potongan kalimat yang lebih panjang untuk cek angka (nama grafik, seri, periode)
+CROP_MIN_AREA = 0.04          # gambar/grafik >= 4% luas slide juga dikirim ke AI sebagai crop resolusi penuh,
+CROP_MIN_GAIN = 1.3           # kalau crop itu minimal 1,3x lebih tajam dari bagian yang sama di render slide
+MAX_CROPS = 4                 # gambar per slide yang dikirim sebagai crop (yang terbesar)
+MAX_CROP_IMAGES = 9           # crop per panggilan AI (gambar lebar dipotong jadi beberapa bagian)
+RASTER_EXT = {"png", "jpg", "jpeg", "gif", "bmp", "tif", "tiff"}
 BLOCK_TYPES = {"heading", "label", "para", "bullet", "item", "table", "figure"}
 PANEL_BLOCK_TYPES = {"para", "bullet", "item"}
 MAX_CAPTION_WORDS = 7         # keterangan panel yang lebih panjang = kalimat judul (headline) -> jadi butir
@@ -141,13 +148,18 @@ COMMON_RULES = """Content rules:
   ("HASIL PEMBAHASAN DEWAN GUBERNUR").
 - Lists of codes/identifiers are not quantities: e.g. "Bank Rerata AL/DPK < 10%: 097, 485" lists bank codes,
   so write "bank 097 dan 485", never "97 dan 485 bank". Copy codes exactly, leading zeros included.
+- A number read from a chart belongs to ONE series and ONE period: follow that series' line/bar (its legend
+  colour or marker) to its x-axis category and copy the label printed at that point. Labels of different series
+  and neighbouring periods sit close together; never take a label from a neighbouring point, series, or column.
+  The same goes for a table picture: copy the cell at the row and column you name. If you cannot tie a label to
+  its series and period with certainty, leave that number out.
 - Do not end a title or sentence with "..." or "…".
 - You may use Markdown **bold** and *italic*: italic for foreign terms (e.g. *safe haven*), bold for emphasis.
 """
 
 TOPIC_PROMPT = """You are writing one box of a SUMMARY BOOK (in Indonesian) from one PowerPoint slide.
 Book section: "{section}".{focus}
-The slide render is attached. Slide elements (id, kind, position x/y and size w/h in % of the slide, content):
+{images} Slide elements (id, kind, position x/y and size w/h in % of the slide, content):
 {elements}
 
 The box is laid out like the example book: the box title, then ONE ROW PER PANEL of the slide. A row shows the
@@ -197,7 +209,7 @@ Answer ONLY with JSON:
 
 TEXT_PROMPT = """You are writing the content of one slide as BOOK TEXT (in Indonesian), almost word for word.
 Book section: "{section}".{focus}{prev}
-The slide render is attached. Slide elements (id, kind, position x/y and size w/h in % of the slide, content):
+{images} Slide elements (id, kind, position x/y and size w/h in % of the slide, content):
 {elements}
 
 "blocks" holds, in slide order:
@@ -226,21 +238,27 @@ Answer ONLY with JSON: {{"blocks": [...]}}
 """
 
 VERIFY_PROMPT = """You are checking numbers in a summary book written from the attached PowerPoint slide.
-These numbers are in the summary but NOT in the slide's text boxes, so they were read from the slide picture
-(chart data labels, axis, a table or text inside an image) or were made up. Look closely at the slide image and
-judge each number in its sentence:
-- "sure": the exact value is clearly printed on the slide (a data label, a table cell, text in a picture) and the
-  sentence uses it with the same meaning (same series, period, unit).
-- "unsure": the value is not printed but estimated from a bar/line height or an axis, too small or blurry to read
-  with certainty, computed from other values, rounded differently, or the sentence gives it another meaning.
-- "absent": the value is not on the slide at all.
-Numbers (number | sentence in the summary):
-{numbers}
-
-"note": for "unsure"/"absent", a short reason in Indonesian saying what the slide shows (e.g. "label grafik Brent
-Tw.I 2026 tertulis 84,0, bukan 84,9"); "" for "sure".
-Answer ONLY with JSON, one entry per number above:
-{{"numbers": [{{"number": "75.7", "verdict": "sure", "note": ""}}]}}
+{images}
+Each line below is a place in the summary where a number was written. That number is hidden as [[?]] (other
+uses of the same number are hidden as [[#]]); do not guess it, read it from the slide. These numbers are not in
+the slide's text boxes, so they should come from the slide picture (chart data labels, a table picture, text inside
+an image). For each place:
+1. From the sentence, work out what the hidden number is: which chart or table, which series (line, bar,
+   scenario, row), which period or column, which unit.
+2. Find that exact spot on the slide (follow the series by its legend colour/marker to the period on the x-axis,
+   or the row and column of the table) and read the value printed THERE, digit by digit, from the
+   full-resolution images.
+Fields:
+- "id": the place id.
+- "at": where you read it, in Indonesian, e.g. "tabel Proyeksi X, baris PDB Dunia, kolom Maret Potential Risk 2026".
+- "kind": "printed" (a value is printed at that spot), "not_printed" (the spot exists but has no printed value,
+  only a bar/line height or an axis), or "no_spot" (the slide has no such chart, series, period, or text).
+- "value": for "printed", the value exactly as printed (e.g. "2.8", "-0.8", "126.7"); otherwise "".
+- "certain": true only if the printed value is clearly legible and you are sure it is the right spot.
+Places (id | sentence with the hidden number):
+{places}
+Answer ONLY with JSON, one entry per place:
+{{"places": [{{"id": "p1", "at": "...", "kind": "printed", "value": "...", "certain": true}}]}}
 """
 
 FIX_PROMPT = """
@@ -259,6 +277,7 @@ class Slide:
     layout: str
     els: dict                      # id -> slide_reader.Box
     render: Optional[Path] = None
+    crops: Optional[list] = None   # [(id, bagian, JPEG)] dari picture_crops, dihitung sekali
 
     @property
     def title(self) -> str:
@@ -298,16 +317,18 @@ class Item:
 
 
 # --------------------------------------------------------------------------- LLM
-def _cache_path(cache_dir: Optional[Path], prompt: str, image: Optional[bytes], model: str) -> Optional[Path]:
+def _cache_path(cache_dir: Optional[Path], prompt: str, image, model: str) -> Optional[Path]:
     if not cache_dir:
         return None
+    import llm
+
     h = hashlib.sha256("|".join((BOOK_VERSION, model, prompt)).encode())
-    if image:
-        h.update(image)
+    for img in llm.image_list(image):
+        h.update(img)
     return Path(cache_dir) / f"{h.hexdigest()[:32]}.json"
 
 
-def ask_json(prompt: str, image: Optional[bytes], provider: str, model: str, cache_dir: Optional[Path],
+def ask_json(prompt: str, image, provider: str, model: str, cache_dir: Optional[Path],
              validate: Callable[[dict], list]) -> tuple:
     """(data atau None, kesalahan, dari cache?). Satu kali perbaikan kalau jawaban tidak sah."""
     import llm
@@ -592,22 +613,84 @@ def validate_item(data: dict, slide: Slide, style: str) -> list:
     return errors
 
 
-def write_item(item: Item, slide: Slide, section_title: str, prev_tail: str, provider: str, model: str,
-               cache_dir: Optional[Path]) -> None:
+def picture_crops(slide: Slide) -> list:
+    """[(id, bagian, JPEG)] gambar/grafik besar di slide pada resolusi penuh, supaya label data kecil terbaca (di
+    render slide utuh yang dikirim ke AI, grafik sepertiga slide hanya ~500 px). Sumber: gambar asli di PPTX kalau
+    lebih tajam dan tidak dipotong, selain itu crop dari render slide (ikut menampilkan bentuk yang ditimpa di
+    atasnya). Gambar sangat lebar/tinggi dipotong jadi beberapa bagian ("2/3" = bagian kedua dari tiga)."""
+    if slide.crops is not None:
+        return slide.crops
+    import io
+    import llm
+    from PIL import Image
+
+    pics = sorted(((k, b) for k, b in slide.els.items() if b.kind == "picture" and b.w * b.h >= CROP_MIN_AREA),
+                  key=lambda kb: -kb[1].w * kb[1].h)[:MAX_CROPS]
+    render = slide_reader.load_render(slide.render) if pics else None
+    out = []
+    for k, b in sorted(pics, key=lambda kb: (round(kb[1].y, 2), kb[1].x)):
+        img = None
+        if render is not None:
+            RW, RH = render.size
+            box = (int(max(b.x, 0) * RW), int(max(b.y, 0) * RH), int(min(b.r, 1) * RW), int(min(b.b, 1) * RH))
+            if box[2] > box[0] and box[3] > box[1]:
+                img = render.crop(box)
+        if b.images and not b.cropped:
+            blob, ext, _ = max(b.images, key=lambda i: i[2])
+            if ext.lower() in RASTER_EXT:
+                try:
+                    orig = Image.open(io.BytesIO(blob))
+                    orig.load()
+                    if img is None or orig.width > img.width:
+                        img = orig
+                except Exception:
+                    pass
+        seen_w = min(b.w, 1) * llm.IMAGE_MAX_W        # lebar gambar ini di render slide yang dikirim ke AI
+        if img is not None and (render is None or img.width >= CROP_MIN_GAIN * seen_w):
+            parts = llm.tiles(img)
+            out += [(k, f"{i}/{len(parts)}" if len(parts) > 1 else "", llm.crop_image(t))
+                    for i, t in enumerate(parts, 1)]
+    slide.crops = out[:MAX_CROP_IMAGES]
+    return out
+
+
+def slide_images(slide: Slide) -> tuple:
+    """(gambar untuk AI: render slide utuh lalu crop grafik, kalimat prompt yang menjelaskan urutannya)."""
     import llm
 
+    images = [llm.slide_image(slide.render)] if slide.render else []
+    crops = picture_crops(slide)
+    images += [img for _, _, img in crops]
+    ids = "; ".join(f"{k} part {part}" if part else k for k, part, _ in crops)
+    if any(part for _, part, _ in crops):
+        ids += (" (a wide or tall picture is split into overlapping parts, left to right or top to bottom; rows"
+                " and columns line up across its parts)")
+    if not crops:
+        note = "The slide render is attached." if slide.render else "No slide render is attached."
+    elif slide.render:
+        note = (f"Attached images: image 1 is the whole slide render; images 2-{len(images)} are the "
+                f"pictures/charts {ids} (in this order) at full resolution. Read chart data labels and table "
+                "cells from the full-resolution images.")
+    else:
+        note = (f"Attached images: the pictures/charts {ids} (in this order) at full resolution; no render of "
+                "the whole slide is available.")
+    return images, note
+
+
+def write_item(item: Item, slide: Slide, section_title: str, prev_tail: str, provider: str, model: str,
+               cache_dir: Optional[Path]) -> None:
+    images, images_note = slide_images(slide)
     focus = f'\nFocus: use only this part of the slide: {item.focus}.' if item.focus else ""
     elements = describe(slide, ITEM_EL_CHARS, ITEM_TABLE_ROWS)
     if item.style == "text":
         prev = (f"\nEnd of the previous slide's text in this section: «{prev_tail}»" if prev_tail else "")
-        prompt = TEXT_PROMPT.format(section=section_title, focus=focus, prev=prev, elements=elements,
-                                    rules=COMMON_RULES)
+        prompt = TEXT_PROMPT.format(section=section_title, focus=focus, prev=prev, images=images_note,
+                                    elements=elements, rules=COMMON_RULES)
     else:
-        prompt = TOPIC_PROMPT.format(section=section_title, focus=focus, elements=elements, max_fig=MAX_FIGURES,
-                                     max_words=MAX_CAPTION_WORDS, rules=COMMON_RULES)
-    image = llm.slide_image(slide.render) if slide.render else None
+        prompt = TOPIC_PROMPT.format(section=section_title, focus=focus, images=images_note, elements=elements,
+                                     max_fig=MAX_FIGURES, max_words=MAX_CAPTION_WORDS, rules=COMMON_RULES)
     try:
-        data, errors, cached = ask_json(prompt, image, provider, model, cache_dir,
+        data, errors, cached = ask_json(prompt, images, provider, model, cache_dir,
                                         lambda d: validate_item(d, slide, item.style))
     except Exception as e:          # jaringan / kuota / SDK: slide memakai cadangan
         data, errors, cached = None, [f"{type(e).__name__}: {e}"], False
@@ -637,12 +720,18 @@ def number_set(text: str) -> set:
     return out
 
 
+_YEAR_RE = re.compile(r"(?:19|20)\d\d")
+
+
 def unknown_numbers(text: str, source: set) -> list:
-    """Angka (>= 2 digit) di teks LLM yang tidak ada di teks slide."""
+    """Angka (>= 2 digit) di teks LLM yang tidak ada di teks slide. Tahun (2025) dan tahun singkat (Mar'26)
+    tidak dihitung: itu label periode, bukan nilai yang dibaca dari grafik."""
     seen, out = set(), []
-    for tok in _NUM_RE.findall(text):
-        t = tok.strip(".,")
+    for m in _NUM_RE.finditer(text):
+        t = m.group().strip(".,")
         if sum(c.isdigit() for c in t) < 2 or t in seen:
+            continue
+        if _YEAR_RE.fullmatch(t) or (len(t) == 2 and text[max(0, m.start() - 1):m.start()] in ("'", "’")):
             continue
         seen.add(t)
         if not (_num_variants(t) & source):
@@ -650,33 +739,53 @@ def unknown_numbers(text: str, source: set) -> list:
     return out
 
 
-def validate_verdicts(data: dict, numbers: list) -> list:
-    got = data.get("numbers")
+def validate_places(data: dict, ids: list) -> list:
+    got = data.get("places")
     if not isinstance(got, list):
-        return ["'numbers' must be a list"]
-    seen = {str(x.get("number", "")).strip() for x in got
-            if isinstance(x, dict) and x.get("verdict") in VERDICTS}
-    missing = [n for n in numbers if n not in seen]
-    return [f"missing or invalid verdict for: {', '.join(missing)} (verdict: {', '.join(VERDICTS)})"] \
-        if missing else []
+        return ["'places' must be a list"]
+    seen = {str(x.get("id", "")).strip() for x in got if isinstance(x, dict) and x.get("kind") in SPOT_KINDS}
+    missing = [i for i in ids if i not in seen]
+    return [f"missing or invalid entry for: {', '.join(missing)} (kind: {', '.join(SPOT_KINDS)})"] if missing else []
 
 
-def verify_numbers(item: Item, image: Optional[bytes], provider: str, model: str,
-                   cache_dir: Optional[Path]) -> bool:
-    """AI mencocokkan angka yang tidak ada di teks slide dengan gambar slide. Mengisi item.verdicts;
+def place_verdict(number: str, ans: dict) -> tuple:
+    """(verdict, catatan) untuk satu tempat angka dari jawaban AI."""
+    at, value = str(ans.get("at") or "").strip(), str(ans.get("value") or "").strip()
+    kind = ans.get("kind")
+    if kind == "no_spot":
+        return "absent", at
+    if kind == "not_printed" or not value:
+        return "unsure", (at + ": " if at else "") + "tidak ada label angka, mungkin diperkirakan dari grafik"
+    if not same_number(number, value):
+        return "mismatch", (at + " " if at else "") + f"tertulis {value}"
+    if ans.get("certain") is not True:
+        return "unsure", (at + ": " if at else "") + f"terbaca {value}, tetapi kurang jelas"
+    return "sure", ""
+
+
+def verify_numbers(item: Item, slide: Slide, provider: str, model: str, cache_dir: Optional[Path]) -> bool:
+    """AI membaca nilai yang tercetak di tempat (grafik, seri, periode / sel tabel) yang dimaksud tiap kalimat,
+    tanpa melihat angka yang ditulis; program membandingkannya dengan angka di buku. Mengisi item.verdicts;
     True kalau jawaban dari cache. Kalau gagal, semua angka tetap dianggap perlu dicek."""
     text = item_text(item.result)
-    listing = "\n".join(f"{n} | {number_context(text, n)}" for n in item.numbers)
+    places = [(f"p{i}", n, ctx) for i, (n, ctx) in
+              enumerate(((n, c) for n in item.numbers for c in (number_places(text, n) or [n])), 1)]
+    listing = "\n".join(f"{pid} | {ctx}" for pid, _, ctx in places)
+    images, images_note = slide_images(slide)
     try:
-        data, _, cached = ask_json(VERIFY_PROMPT.format(numbers=listing), image, provider, model, cache_dir,
-                                   lambda d: validate_verdicts(d, item.numbers))
+        data, _, cached = ask_json(VERIFY_PROMPT.format(images=images_note, places=listing), images, provider,
+                                   model, cache_dir, lambda d: validate_places(d, [p[0] for p in places]))
     except Exception:
         data, cached = None, False
     if data is None:
         item.verdicts = {n: ("unsure", "") for n in item.numbers}
         return False
-    by_n = {str(x.get("number", "")).strip(): x for x in data["numbers"] if isinstance(x, dict)}
-    item.verdicts = {n: (by_n[n]["verdict"], str(by_n[n].get("note") or "").strip()) for n in item.numbers}
+    by_id = {str(x.get("id", "")).strip(): x for x in data["places"] if isinstance(x, dict)}
+    item.verdicts = {}
+    for pid, n, _ in places:          # angka yang dipakai beberapa kali: pemakaian pertama yang salah menentukan
+        v = place_verdict(n, by_id.get(pid, {}))
+        if item.verdicts.get(n, ("sure",))[0] == "sure":
+            item.verdicts[n] = v
     return cached
 
 
@@ -685,14 +794,46 @@ def flagged_numbers(item: Item) -> list:
     return [n for n in item.numbers if item.verdicts.get(n, ("unsure",))[0] != "sure"]
 
 
+def _number_re(number: str):
+    return re.compile(r"(?<![\d.,])" + re.escape(number) + r"(?![\d]|[.,]\d)")
+
+
 def number_context(text: str, number: str, chars: int = NUMBER_CONTEXT_CHARS) -> str:
     """Potongan kalimat di sekitar angka, untuk komentar review ("...terdapat 97 dan 485 bank...")."""
-    m = re.search(r"(?<![\d.,])" + re.escape(number) + r"(?![\d]|[.,]\d)", text)
+    m = _number_re(number).search(text)
     if not m:
         return number
     a, b = max(0, m.start() - chars), min(len(text), m.end() + chars)
     snippet = re.sub(r"\s+", " ", text[a:b]).strip()
     return ("…" if a else "") + snippet + ("…" if b < len(text) else "")
+
+
+def number_places(text: str, number: str, chars: int = VERIFY_CONTEXT_CHARS) -> list:
+    """Tiap pemakaian angka sebagai potongan kalimat dengan angka itu disembunyikan ([[?]]; pemakaian lain angka
+    yang sama [[#]]). AI membaca sendiri nilai di tempat yang dimaksud kalimat, tanpa terpengaruh angka yang
+    ditulis; programnya yang membandingkan. Angka yang sama bisa berarti dua hal ("2,9% (2026) dan 2,9% (2027)"),
+    jadi tiap pemakaian dicek sendiri."""
+    rx, out = _number_re(number), []
+    for m in rx.finditer(text):
+        a, b = max(0, m.start() - chars), min(len(text), m.end() + chars)
+        window = rx.sub(lambda x, _t=m.start() - a: "[[?]]" if x.start() == _t else "[[#]]", text[a:b])
+        out.append(("…" if a else "") + re.sub(r"\s+", " ", window).strip() + ("…" if b < len(text) else ""))
+    return out
+
+
+def same_number(written: str, printed: str) -> bool:
+    """Angka di buku sama dengan yang tercetak di slide: format 2,8 / 2.8 / 2.80, pemisah ribuan, dan tanda minus
+    diabaikan (buku menulis "defisit 0,8" untuk -0.8)."""
+    m = re.search(r"\d+(?:[.,]\d+)*", printed or "")
+    if not m:
+        return False
+    a, b = written.strip(".,"), m.group()
+    if _num_variants(a) & _num_variants(b):
+        return True
+    try:
+        return float(a.replace(",", ".")) == float(b.replace(",", "."))
+    except ValueError:
+        return False
 
 
 def item_text(result: dict) -> str:
@@ -892,6 +1033,8 @@ def write_book(outline: dict, items: list, slides: dict, docx_path: Path, media_
                 for k, num in enumerate(flagged_numbers(it)):
                     verdict, why = it.verdicts.get(num, ("unsure", ""))
                     head = (f'Angka "{num}" tidak ditemukan di slide {slide.n}' if verdict == "absent" else
+                            f'Angka "{num}" kemungkinan salah, berbeda dengan slide {slide.n}'
+                            if verdict == "mismatch" else
                             f'Angka "{num}" belum pasti: tidak ada di teks slide {slide.n} dan AI kurang yakin '
                             "membacanya dari gambar")
                     msg = f"{head}{': ' + why.rstrip('.') if why else ''}. Cocokkan dengan slide."
@@ -978,10 +1121,9 @@ def convert_book(
     check = [it for it in items if it.numbers and by_n[it.slide].render] if comments else []
     verify_calls = verify_hits = 0
     if check:
-        import llm
         progress(0.8, f"AI mengecek angka di {len(check)} slide")
         with ThreadPoolExecutor(max(1, workers)) as ex:
-            futures = {ex.submit(verify_numbers, it, llm.slide_image(by_n[it.slide].render), provider,
+            futures = {ex.submit(verify_numbers, it, by_n[it.slide], provider,
                                  model, cache): it for it in check}
             for done, f in enumerate(as_completed(futures), 1):
                 if f.result():
@@ -1017,6 +1159,8 @@ def convert_book(
         "cache_hits": sum(1 for it in items if it.source == "cache") + (1 if outline_cached else 0) + verify_hits,
         "fallback": [it.slide for it in items if it.source == "fallback"],
         "comments": n_comments,
+        "workers": workers,
+        "crops": {"slides": sum(1 for s in slides if s.crops), "images": sum(len(s.crops or []) for s in slides)},
         "numbers": {"not_in_text": sum(len(it.numbers) for it in items),
                     "flagged": sum(len(flagged_numbers(it)) for it in items)},
         "seconds": {"render": round(t_render - t0, 1), "outline": round(t_outline - t_render, 1),

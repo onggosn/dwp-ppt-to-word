@@ -10,6 +10,14 @@
       "port": 5003
     },
     {
+      "name": "backend-mac",
+      "runtimeExecutable": ".venv-mac/bin/python",
+      "runtimeArgs": [
+        "backend/app.py"
+      ],
+      "port": 5003
+    },
+    {
       "name": "frontend",
       "runtimeExecutable": "npm",
       "runtimeArgs": [

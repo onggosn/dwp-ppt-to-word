@@ -37,6 +37,7 @@ MAX_PPT_MB = 150
 MAX_PDF_MB = 150
 SECONDS_PER_SLIDE = 9          # perkiraan awal (mockup: ~18 menit untuk 120 slide)
 MODEL = os.environ.get("POC_MODEL") or book_engine.DEFAULT_MODEL
+WORKERS = max(1, int(os.environ.get("BOOK_WORKERS") or 4))   # panggilan AI paralel (dibatasi kuota Bedrock)
 
 # batas progress book_engine: 0.15 kerangka, 0.25..0.8 isi per slide, 0.8..0.9 cek angka, 0.92 tulis Word
 STEPS = [
@@ -144,7 +145,7 @@ def _run(doc_id, run_id, pptx: Path, out_dir: Path, total: int):
     try:
         docx = out_dir / (pptx.stem + " - Buku.docx")
         stats = book_engine.convert_book(pptx, docx, model=MODEL, work_dir=out_dir / "build",
-                                         progress=progress, comments=True)
+                                         workers=WORKERS, progress=progress, comments=True)
         if not current():
             return
         conv = doc["conversion"]
@@ -273,5 +274,5 @@ if __name__ == "__main__":
     WORK.mkdir(parents=True, exist_ok=True)
     if not os.environ.get("AWS_BEARER_TOKEN_BEDROCK"):
         print("  [!] AWS_BEARER_TOKEN_BEDROCK belum diisi (.env): konversi akan gagal.")
-    print(f"POC API: Full AI book_engine, model={MODEL}  ->  http://localhost:5003")
+    print(f"POC API: Full AI book_engine, model={MODEL}, workers={WORKERS}  ->  http://localhost:5003")
     app.run(port=5003, threaded=True)
