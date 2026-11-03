@@ -17,7 +17,8 @@ POC "PPT to Word Convert" for DWP. Setup, run, flow and API are in [README.md](R
 
 - Python 3.13 only: `py -3.13 -m venv .venv`. Never run `python -m venv .venv` over the existing venv with another version (breaks lxml: `cannot import name 'etree'`). Rebuild with `py -3.13 -m venv --clear .venv` and reinstall `backend/requirements.txt`.
 - Keep `extra_body={"anthropic_version": BEDROCK_API_VERSION}` in `bedrock_llm.py`. Without it, anthropic SDK 2.x sends a newer API version that Bedrock rejects for Opus 4.5 / 4.6.
-- Model: `BEDROCK_MODEL` in `backend/.env` (now `global.anthropic.claude-opus-4-5-20251101-v1:0`, region `ap-southeast-3`). Sonnet 4.6 also works; Opus 4.7 and newer return 403 for this account.
+- Model: `BEDROCK_MODEL` in `backend/.env` (now `global.anthropic.claude-opus-4-5-20251101-v1:0`, region `ap-southeast-3`). Sonnet 4.6 also works; Opus 4.7 and newer return 403 for this account. From Jakarta every Claude model only runs through `global.` (processed outside Indonesia possible).
+- Non-Claude Bedrock models (e.g. `moonshotai.kimi-k2.5`, processed in Jakarta) go through `converse_llm.py` (Converse API); `llm.py` picks the path from the model ID. Short-term Bedrock API keys only work in the region they were created in.
 - Only the Full AI path (`book_engine.convert_book`) is kept. The rules-based report engine and older experiments were removed on purpose; do not bring them back.
 - Slide renders: PowerPoint on Windows, LibreOffice + PyMuPDF on macOS / Linux. The LibreOffice path has not been tested on a Mac yet.
 

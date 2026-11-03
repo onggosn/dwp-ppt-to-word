@@ -1,7 +1,8 @@
-"""Panggilan LLM (Claude di Bedrock, atau Ollama) dan gambar slide untuk LLM. Dipakai book_engine."""
+"""Panggilan LLM (Claude atau model lain di Bedrock, atau Ollama) dan gambar slide untuk LLM. Dipakai book_engine."""
 from __future__ import annotations
 
 import io
+import re
 import time
 from pathlib import Path
 from typing import Union
@@ -71,10 +72,20 @@ def image_list(images: Images) -> list:
 
 
 # --------------------------------------------------------------------------- provider
-def _bedrock(prompt: str, images: Images, model: str) -> str:
-    import bedrock_llm
+def is_claude(model: str) -> bool:
+    """ID Claude di Bedrock: anthropic.… atau profil global./us./apac.anthropic.…"""
+    return bool(re.search(r"(^|\.)anthropic\.", model or ""))
 
-    return bedrock_llm.generate(prompt, image_list(images), model)
+
+def _bedrock(prompt: str, images: Images, model: str) -> str:
+    """Claude lewat Anthropic SDK (bedrock_llm); model lain di Bedrock (Kimi, Nova, ...) lewat Converse API."""
+    if is_claude(model):
+        import bedrock_llm
+
+        return bedrock_llm.generate(prompt, image_list(images), model)
+    import converse_llm
+
+    return converse_llm.generate(prompt, image_list(images), model)
 
 
 def _ollama(prompt: str, images: Images, model: str) -> str:
