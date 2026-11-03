@@ -5,6 +5,7 @@ python-pptx
 Pillow
 pymupdf               # slide render through LibreOffice (PDF -> PNG) when PowerPoint is missing
 anthropic[bedrock]    # Claude on Amazon Bedrock
+boto3                 # other Bedrock models (e.g. Kimi K2.5) via Converse API, converse_llm.py
 python-dotenv         # reads backend/.env
 
 # optional: local models instead of Bedrock (provider="ollama")
