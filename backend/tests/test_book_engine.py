@@ -9,12 +9,14 @@
 - alur lengkap dengan LLM palsu (jawaban JSON tetap) menghasilkan DOCX dengan bab, bagian, kotak berpanel
   (gambar | butir panel), indentasi badan teks seperti contoh, dan komentar
 """
+import io
 import json
 import re
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 BACKEND = Path(__file__).resolve().parent.parent
 ROOT = BACKEND.parent
@@ -27,6 +29,7 @@ from docx import Document  # noqa: E402
 from docx.oxml.ns import qn  # noqa: E402
 import book_writer as bw  # noqa: E402
 from slide_reader import Box, Para  # noqa: E402
+from token_usage import record_usage  # noqa: E402
 
 DECK = ROOT / "samples" / "test.pptx"
 
@@ -206,6 +209,22 @@ class PipelineTest(unittest.TestCase):
 
     def tearDown(self):
         llm.call_llm = self._orig
+
+    def test_usage_includes_parallel_slide_calls(self):
+        def fake_with_usage(prompt, image, provider, model):
+            record_usage(model, input_tokens=100, output_tokens=20, total_tokens=120)
+            return fake_llm(prompt, image, provider, model)
+
+        with tempfile.TemporaryDirectory() as tmp, patch("sys.stdout", new_callable=io.StringIO), \
+                patch.object(llm, "call_llm", side_effect=fake_with_usage):
+            stats = be.convert_book(
+                DECK, Path(tmp) / "book.docx", render=False,
+                work_dir=Path(tmp) / "build", cache_dir=None, workers=2,
+            )
+        self.assertEqual(stats["token_usage"]["responses"], 3)
+        self.assertEqual(stats["token_usage"]["input_tokens"], 300)
+        self.assertEqual(stats["token_usage"]["output_tokens"], 60)
+        self.assertEqual(stats["token_usage"]["total_tokens"], 360)
 
     def test_convert(self):
         with tempfile.TemporaryDirectory() as tmp:

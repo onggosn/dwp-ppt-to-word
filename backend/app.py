@@ -152,7 +152,7 @@ def _run(doc_id, run_id, pptx: Path, out_dir: Path, total: int):
         conv.update(status="complete", progress=1.0, currentSlide=total, finishedAt=_now(),
                     stats={k: stats[k] for k in ("title", "slides", "chapters", "slides_used", "llm_calls",
                                                   "cache_hits", "fallback", "comments", "numbers", "rendered",
-                                                  "seconds", "check")})
+                                                  "seconds", "check", "token_usage")})
         for st in conv["steps"]:
             st["state"] = "done"
         doc["word"] = {"name": docx.name, "size": docx.stat().st_size, "comments": stats["comments"],

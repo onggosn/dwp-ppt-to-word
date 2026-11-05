@@ -11,6 +11,8 @@ import os
 import threading
 from pathlib import Path
 
+from token_usage import record_usage
+
 try:   # .env di backend/ (tidak ikut git); variabel yang sudah di-export tetap menang
     from dotenv import load_dotenv
     load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -62,5 +64,15 @@ def generate(prompt: str, images=None, model: str = "moonshotai.kimi-k2.5") -> s
     except ClientError as e:
         status = e.response.get("ResponseMetadata", {}).get("HTTPStatusCode") or 0
         raise ConverseError(f"{e.response.get('Error', {}).get('Code', '')}: {e}", status) from None
+    usage = resp.get("usage")
+    if usage is None:
+        record_usage(model)
+    else:
+        record_usage(
+            model, input_tokens=usage["inputTokens"], output_tokens=usage["outputTokens"],
+            cache_read_input_tokens=usage.get("cacheReadInputTokens", 0),
+            cache_creation_input_tokens=usage.get("cacheWriteInputTokens", 0),
+            total_tokens=usage["totalTokens"],
+        )
     blocks = resp.get("output", {}).get("message", {}).get("content", [])
     return "".join(b.get("text", "") for b in blocks)

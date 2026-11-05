@@ -33,6 +33,7 @@ import json
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextvars import copy_context
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
@@ -43,6 +44,7 @@ import bedrock_llm
 import slide_reader
 from book_writer import BookHtmlWriter, BookWriter, plain
 from docx_common import DEFAULT_TEMPLATE, Tee
+from token_usage import track_conversion
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_CACHE = HERE / "work" / "book_cache"
@@ -1050,6 +1052,7 @@ def write_book(outline: dict, items: list, slides: dict, docx_path: Path, media_
 
 
 # --------------------------------------------------------------------------- orkestrasi
+@track_conversion
 def convert_book(
     pptx_path,
     docx_path,
@@ -1104,7 +1107,7 @@ def convert_book(
             prev_tail[id(it)] = by_n[last[key]].source_text()[-PREV_TAIL_CHARS:]
         last[key] = it.slide
     with ThreadPoolExecutor(max(1, workers)) as ex:
-        futures = {ex.submit(write_item, it, by_n[it.slide], titles[(it.chapter, it.section)],
+        futures = {ex.submit(copy_context().run, write_item, it, by_n[it.slide], titles[(it.chapter, it.section)],
                              prev_tail.get(id(it), ""), provider, model, cache): it for it in items}
         for done, f in enumerate(as_completed(futures), 1):
             f.result()
@@ -1123,7 +1126,7 @@ def convert_book(
     if check:
         progress(0.8, f"AI mengecek angka di {len(check)} slide")
         with ThreadPoolExecutor(max(1, workers)) as ex:
-            futures = {ex.submit(verify_numbers, it, by_n[it.slide], provider,
+            futures = {ex.submit(copy_context().run, verify_numbers, it, by_n[it.slide], provider,
                                  model, cache): it for it in check}
             for done, f in enumerate(as_completed(futures), 1):
                 if f.result():
