@@ -300,7 +300,8 @@ class BookWriter:
                 _valign_top(txt_cell)
                 self._box_figure(img_cell, img, caption, (cols[0] - 2 * CELL_PAD) * 635, PANEL_IMG_H)
                 self.blocks(pblocks, txt_cell)
-            _cant_split(t.rows[-1])
+            if not pblocks:
+                _cant_split(t.rows[-1])
         if after:
             self.blocks(list(after), full_row())
         self._para("para")

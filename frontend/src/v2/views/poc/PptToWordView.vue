@@ -239,6 +239,35 @@
                 Download Word
               </v-btn>
             </div>
+            <div v-if="tokenUsage" class="info-box mt-4 text-12">
+              <p class="fw-500 mb-1">LLM token usage (this conversion)</p>
+              <p class="mb-1">
+                Total: {{ tokenUsage.total_tokens.toLocaleString() }} tokens |
+                Input: {{ tokenUsage.input_tokens.toLocaleString() }} | Output:
+                {{ tokenUsage.output_tokens.toLocaleString() }}
+              </p>
+              <p class="mb-1">
+                Cache read:
+                {{ tokenUsage.cache_read_input_tokens.toLocaleString() }} |
+                Cache write:
+                {{ tokenUsage.cache_creation_input_tokens.toLocaleString() }} |
+                Responses: {{ tokenUsage.responses.toLocaleString() }}
+              </p>
+              <p v-if="tokenUsage.models.length" class="mb-1">
+                Model: {{ tokenUsage.models.join(", ") }}
+              </p>
+              <p class="mb-0 meta">
+                Reported API usage only. Local cache hits use no new tokens.
+                Interrupted requests may not report usage.
+              </p>
+              <p v-if="tokenUsage.missing_usage" class="mb-0">
+                Usage unavailable for {{ tokenUsage.missing_usage }} responses;
+                totals are incomplete.
+              </p>
+            </div>
+            <p v-else class="text-12 mt-4 meta">
+              Token usage is unavailable for this conversion.
+            </p>
             <div class="info-box d-flex align-start mt-4">
               <v-icon color="#267dc2" class="mr-3">mdi-information</v-icon>
               <span class="text-12">
@@ -515,6 +544,7 @@ const replace = reactive({
 const alert = reactive({ open: false, title: "", message: "" });
 
 const conv = computed(() => doc.value?.conversion || null);
+const tokenUsage = computed(() => conv.value?.stats?.token_usage);
 
 const statusChip = computed(() => {
   const s = doc.value?.status || "not_started";

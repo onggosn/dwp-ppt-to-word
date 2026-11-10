@@ -9,6 +9,17 @@ const http = axios.create({ baseURL: "/poc-api", adapter: "xhr" });
 
 export type StepState = "waiting" | "running" | "done";
 
+export interface TokenUsage {
+  responses: number;
+  missing_usage: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_input_tokens: number;
+  cache_creation_input_tokens: number;
+  total_tokens: number;
+  models: string[];
+}
+
 export interface PocDocument {
   id: string;
   status: "not_started" | "in_progress" | "done";
@@ -32,7 +43,7 @@ export interface PocDocument {
     etaSeconds?: number;
     steps: Array<{ label: string; state: StepState }>;
     error: string | null;
-    stats?: Record<string, any>;
+    stats?: { token_usage?: TokenUsage; [key: string]: unknown };
   };
   word: null | {
     name: string;

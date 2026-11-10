@@ -37,6 +37,12 @@ copy backend\.env.example backend\.env      # then fill in AWS_BEARER_TOKEN_BEDR
 
 Do not run `python -m venv .venv` over an existing `.venv` with another Python version: the installed packages are built for 3.13 and stop loading (`cannot import name 'etree' from 'lxml'`). To rebuild it, use `py -3.13 -m venv --clear .venv` and install the requirements again.
 
+If Bedrock fails with `SSL: CERTIFICATE_VERIFY_FAILED` on a corporate network, set
+`AWS_CA_BUNDLE` in `backend/.env` to the absolute path of a trusted PEM CA bundle
+provided by your IT team, then restart the backend. Both Claude and Converse use
+this setting. Leave it empty to use the SDK defaults; TLS verification stays
+enabled. In `.env`, use single quotes around Windows paths containing backslashes.
+
 Frontend (Node 18+). It also needs `frontend/.env.development` from the DWP team (not in git); `.env.poc` only overrides a few values.
 
 ```
@@ -189,6 +195,23 @@ python backend/book_engine.py "samples/rdgb-maret-2026/DKEM RDGB Maret 2026_06_M
 ```
 
 AI answers are cached in `backend/work/book_cache`, so re-runs only call the AI for changed slides. The model is `BEDROCK_MODEL` in `backend/.env`.
+
+Topic panels containing text may continue onto the next Word page so long panels
+do not push the opening content onto later pages. Topic titles and image-only
+panels stay together.
+
+Each conversion prints one `[tokens-summary]` JSON line in the backend terminal
+on success or failure, with filename, conversion ID, models, response count,
+input/output/cache tokens and total tokens. Parallel slide requests, repair
+calls, and number checks are counted separately for each conversion. Successful
+totals are saved in `conversion.stats.token_usage` and shown under Word
+(Conversion) in the frontend, including after refresh. Old conversions without
+usage data show an unavailable message; fully cached conversions use zero new
+tokens. Claude totals include cache tokens; Converse totals use AWS's reported
+`totalTokens`. These are reported-response totals, not billing estimates:
+interrupted calls and SDK retries without returned usage cannot be counted;
+`missing_usage` identifies responses without usage. Ollama usage is not tracked.
+Prompts, generated text, and credentials are not logged.
 
 ## API
 
